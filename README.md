@@ -618,21 +618,5 @@ Le pipeline a été développé et testé sur :
 
 Pour toute question ou remarque :
 
-- GitHub : @tonpseudo
-- Email : ton.email@exemple.com
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- GitHub : @Torzzy
+- Email : tomdauve@gmail.com
