@@ -88,39 +88,6 @@ Pour cela, scVI projette chaque cellule dans un espace latent de faible dimensio
 
 Contrairement à une simple réduction de dimension comme la PCA ou l’UMAP, cette projection est probabiliste, non linéaire et apprise directement à partir des données, ce qui permet de comparer plus fidèlement des cellules issues de cohortes différentes.
 
-### Application dans l’étude
-
-Le modèle est entraîné sur l’ensemble des données, puis utilisé pour projeter toutes les cellules dans l’espace latent appris par scVI :
-
-<table style="width:100%; text-align:center;">
-  <tr>
-    <td>
-      <img src="sources/umap_condition.png" width="100%">
-      <div style="height: 40px;">Figure 1a : UMAP ALS vs Controls</div>
-    </td>
-    <td>
-      <img src="sources/umap_dataset.png" width="100%">
-      <div style="height: 40px;">Figure 1b : UMAP par dataset</div>
-    </td>
-    <td>
-      <img src="sources/umap_region.png" width="100%">
-      <div style="height: 40px;">Figure 1c : UMAP par région</div>
-    </td>
-  </tr>
-</table>
-
-<p style="text-align:center;">
-  <b>Figure 1 :</b> Représentations UMAP colorées par condition, dataset et région.
-</p>
-
-La figure 1 permet de visualiser l’espace latent généré par scVI. On observe plusieurs clusters correspondant probablement à différents types cellulaires, possiblement dans des états biologiques distincts.
-
-La figure 1a montre que, dans la plupart des clusters, des cellules ALS et contrôles coexistent. Cela suggère que la structure principale de l’espace latent reflète davantage les identités cellulaires que la condition clinique seule.
-
-La figure 1b indique que tous les datasets ne sont pas représentés de manière uniforme dans chaque cluster. Certains clusters contiennent des cellules issues des trois cohortes, tandis que d’autres semblent plus spécifiques à un dataset.
-
-Cela reste biologiquement plausible : deux datasets proviennent du cerveau, tandis qu’un autre provient de la moelle épinière. Les populations cellulaires attendues ne sont donc pas strictement identiques entre tissus.
-
 ### Limite importante du design expérimental
 
 Dans cette étude, chaque tissu est présent dans un seul dataset. Cela constitue une limite importante.
@@ -164,15 +131,19 @@ Cette section décrit le pipeline utilisé pour comparer les profils transcripto
 
 Le pipeline se décompose en trois étapes :
 
-* **Annotation de l’espace latent** : les données initiales ne sont pas annotées par type cellulaire (neurone, astrocyte, etc.). Cette étape permet d’attribuer un type cellulaire à chaque cellule.
+* **Annotation des cellules** : les données initiales ne sont pas annotées par type cellulaire (neurone, astrocyte, etc.). Cette étape permet d’attribuer un type cellulaire à chaque cellule.
 * **Pseudobulk Differential Expression (DE)** : comparaison ALS vs contrôles au niveau patient, stratifiée par type cellulaire et région, à l’aide de l’algorithme **edgeR**.
 * **GSEA** : analyse d’enrichissement sur les bases de données **MSigDB Hallmark 2020** et **Reactome 2022**. Un tableau récapitulatif des enrichissements significatifs est généré.
 
-### Annotation de l’espace latent
+### Annotation des cellules
 
-Une approche combinant méthodes classiques et utilisation de l’espace latent est proposée pour annoter automatiquement les cellules.
+L'annotation des cellules se fait en deux temps :
 
-La première étape consiste à définir des gènes marqueurs pour chaque type cellulaire étudié :
+* **annotation des clusters** : on commence par annoter les clusters à l'aide de l'espace latent.
+* **annotation des cellules** : on se sert de cette annotation pour initialiser l'annotation des cellules.
+* **calcul des métriques** : une fois l'annotation réalisée, on vérifie que cette dernière est cohérente.
+
+Pour la suite de la démarche, on définit des gènes marqueurs qui caractérisent des types cellulaires :
 
 | Type de cellule | Gènes marqueurs             |
 | --------------- | --------------------------- |
@@ -186,265 +157,305 @@ La première étape consiste à définir des gènes marqueurs pour chaque type c
 | Endothelial     | CLDN5, FLT1, PECAM1         |
 | Pericyte        | PDGFRB, RGS5                |
 
-### 1. Score basé sur les marqueurs
+#### Annotation des clusters
 
-Pour chaque gène marqueur **G** et chaque cellule **C**, un score standardisé est calculé :
+Pour annoter un cluster c, on regarde quels gènes sont plus exprimés dans ce cluster par rapport aux autres.  
+Pour cela, on réalise un DE (Differential Expression) avec l'algorithme edgeR.  
+Il s'agit d'un test statistique qui permet de répondre à la question posée. Pour chaque gène,  
+l'algorithme retourne deux valeurs : logFC et FDR. LogFC indique à quel point le gène est plus exprimé dans le cluster par rapport aux autres (négatif s'il est moins exprimé que dans les autres clusters, positif sinon).  
+FDR indique la confiance dans le résultat (0,05 correspond à une confiance de 95 % par exemple).
 
-S(G,C) = (G₍C₎ - μ(G)) / σ(G)
+Ces deux valeurs permettent d'attribuer un score pour chaque gène dans le cluster de la manière suivante :
 
-où μ(G) et σ(G) correspondent respectivement à la moyenne et à l’écart-type d’expression du gène **G** dans l’ensemble des cellules (après exclusion des outliers).
+S(G) = logFC * (-10 log(FDR + ε))
 
-Les cellules trop homogènes sont également retirées.
+On finit par calculer la moyenne des scores pour chaque type cellulaire et on annote le cluster avec le score moyen le plus grand.  
+Plus précisément, on vérifie que le score n'est pas trop faible, auquel cas on n'annote pas. Si le deuxième score est trop proche  
+du premier, on l'annote comme un cluster mixte.
 
-Un score global est ensuite calculé pour chaque type cellulaire en moyennant les scores de ses marqueurs.
+#### Annotation des cellules
 
-Exemple pour le type **Neuron** :
+Pour annoter les cellules, on se base sur le calcul de 3 scores par type de cellules :
 
-S(Neuron,C) = (S(RBFOX3,C) + S(SYT1,C) + S(SNAP25,C) + S(MAP2,C)) / 4
+- Un score de voisinage S<sub>N</sub>. Pour chaque type cellulaire, on compte le nombre de voisins les plus proches dans l'espace latent et on le divise par le nombre de voisins observés.
+- Un score de gènes marqueurs S<sub>MARKERS</sub>. On commence par classer les gènes par counts décroissants. Puis on calcule l'AUC normalisée sur ces gènes pour chaque type cellulaire.
+- Un score de distance au centroïde S<sub>C</sub>. Pour chaque type cellulaire, on calcule le centroïde dans l'espace latent et on prend la distance entre la cellule et ce centroïde. On divise par le maximum des distances pour normaliser.
 
-Chaque cellule dispose ainsi d’un score d’appartenance pour chaque type cellulaire.
+On pondère pour obtenir le score final d'une cellule de la manière suivante :
 
-### 2. Sélection de cellules de confiance
+S<sub>total</sub> = 0.4 S<sub>N</sub> + 0.35 S<sub>MARKERS</sub> + 0.25 S<sub>C</sub>
 
-Un premier ensemble de cellules de confiance est construit en conservant les cellules dont le meilleur score dépasse un seuil défini.
+En pratique, cette annotation se fait de manière itérative. On initialise les scores des cellules avec S<sub>MARKERS</sub>  
+pour pouvoir calculer les autres scores, puis on calcule S<sub>total</sub> et on suppose que le type de la cellule est celui pour lequel S<sub>total</sub> est le plus grand.  
+Une fois cette nouvelle annotation faite, on recommence et on observe à l'itération i : mean(||S<sub>total, i+1</sub> - S<sub>total, i</sub>||).  
+On s'arrête une fois que cette norme est inférieure à un certain delta.
 
-Dans une seconde passe, l’espace latent scVI est utilisé pour renforcer cette sélection.
+#### Métriques
 
-Pour chaque cellule, on observe ses **15 plus proches voisins** dans l’espace latent et on calcule un score de consistance :
+Pour se donner une idée de la qualité de l’annotation, différentes métriques sont calculées :
 
-* nombre de voisins du même type / nombre total de voisins
-
-Seules les cellules avec un score supérieur à **0.7** sont conservées comme cellules de confiance.
-
-### 3. Classification finale
-
-Les cellules de confiance servent ensuite à entraîner un petit réseau de neurones prenant en entrée la représentation latente d’une cellule et prédisant son type cellulaire.
-
-Une fois entraîné, ce classifieur est appliqué à l’ensemble des cellules.
-
-Pour les analyses en aval, seules les cellules dont la prédiction est jugée fiable sont conservées :
-
-* probabilité de prédiction supérieure à un seuil ;
-* marge suffisante entre la meilleure et la deuxième prédiction.
-
-### Pseudobulk DE
-
-L’analyse de l’expression différentielle (DE) cherche à répondre à la question suivante :
-
-**Dans un type cellulaire donné et une région donnée, quels gènes sont différentiellement exprimés entre individus ALS et contrôles ?**
-
-En single-cell, les cellules provenant d’un même patient ne sont pas indépendantes : elles partagent un contexte biologique commun. Il est donc préférable de raisonner au niveau patient plutôt qu’au niveau cellule individuelle.
-
-Pour cela, les counts sont agrégés par patient, puis séparément par région et par type cellulaire. On obtient ainsi, pour chaque patient, un profil d’expression pseudobulk représentant une population cellulaire donnée dans une région donnée.
-
-Ces profils sont ensuite analysés avec **edgeR**, un outil statistique adapté à l’analyse d’expression différentielle sur données de comptage.
-
-Pour chaque gène (ici les 3000 gènes retenus), edgeR fournit notamment :
-
-* **logFC** : variation d’expression entre ALS et contrôles.
-
-  * `logFC > 0` : gène plus exprimé chez ALS
-  * `logFC < 0` : gène plus exprimé chez les contrôles
-
-* **p-value** : probabilité d’observer un effet au moins aussi extrême par hasard.
-
-* **FDR** (*False Discovery Rate*) : correction des tests multiples. Comme des milliers de gènes sont testés simultanément, cette mesure permet de limiter les faux positifs. C’est le critère principal de significativité.
-
-* **logCPM** : niveau moyen d’expression du gène (*counts per million*).
-
-### GSEA
-
-Le **Gene Set Enrichment Analysis (GSEA)** vise à identifier des programmes biologiques complets plutôt que des gènes isolés.
-
-Les résultats de DE sont d’abord filtrés afin de ne conserver que les comparaisons contenant suffisamment de gènes informatifs (*FDR < 0.25*).
-
-Les gènes sont ensuite classés selon le score :
-
-**S = sign(logFC) × (-log10(FDR))**
-
-Cette liste ordonnée est utilisée comme entrée du GSEA.
-
-L’algorithme interroge des bases de données de pathways biologiques, où chaque pathway correspond à un ensemble de gènes associés à une fonction donnée.
-
-Pour chaque pathway, GSEA calcule :
-
-* **NES** (*Normalized Enrichment Score*) : indique si le pathway est enrichi chez ALS ou chez les contrôles.
-* **FDR** : niveau de confiance statistique associé à cet enrichissement.
-
-Seuls les pathways vérifiant :
-
-* `|NES| > 1.2`
-* `FDR < 0.25`
-
-sont retenus.
-
-Les bases de données utilisées sont :
-
-* **MSigDB Hallmark 2020**
-* **Reactome 2022**
-
-### Résultats
-
-Les résultats complets de l’enrichissement sont disponibles dans le tableau ci-dessous.
-
-Pour faciliter la lecture, voici les principales tendances observées :
-
-* **Moelle épinière (SC)** : enrichissement récurrent de signatures inflammatoires (*TNF-alpha signaling via NF-kB*, *Inflammatory Response*, *Interferon Gamma Response*, *Hypoxia*), notamment dans les astrocytes, cellules endothéliales et oligodendrocytes.
-* **Neurones excitateurs et neurones globaux (MCX)** : augmentation de voies liées au métabolisme énergétique et à la traduction (*Oxidative Phosphorylation*, *Myc Targets*, *Translation*, *mTORC1 Signaling*).
-* **Régions corticales (FCX / FX)** : signatures plus hétérogènes, avec selon les types cellulaires des diminutions de voies métaboliques, synaptiques ou liées à la signalisation.
-
-Ces résultats suggèrent que les altérations biologiques associées à la SLA dépendent fortement du **tissu étudié** et du **type cellulaire considéré**.
-
-### Résultats
-
-Le tableau suivant présente un résumé des enrichissements biologiques les plus marquants observés selon les régions et types cellulaires.
-
-| Région   | Type cellulaire | Pathways dominants                             | Interprétation globale                      |
-| -------- | --------------- | ---------------------------------------------- | ------------------------------------------- |
-| SC       | Astrocyte       | TNF-alpha Signaling, Interferon Gamma Response | Activation inflammatoire marquée            |
-| SC       | Endothelial     | Inflammatory Response, Hypoxia                 | Stress vasculaire et inflammation           |
-| SC       | Oligodendrocyte | TNF-alpha Signaling, Hypoxia, Translation      | Réponse au stress et adaptation métabolique |
-| MCX      | Excitatory      | Oxidative Phosphorylation, mTORC1, Translation | Hausse énergétique et synthèse protéique    |
-| MCX      | Neuron          | Myc Targets, Translation, Metabolism of RNA    | Remodelage métabolique cellulaire           |
-| FCX      | Excitatory      | ↓ Oxidative Phosphorylation, ↓ Myc Targets     | Altération métabolique neuronale            |
-| FX       | Inhibitory      | ↓ Oxidative Phosphorylation, ↓ mTORC1          | Diminution de l’activité métabolique        |
-| FCX / FX | Plusieurs types | Signatures variables selon le type cellulaire  | Hétérogénéité corticale importante          |
-
-Globalement, les résultats mettent en évidence des différences entre régions et types cellulaires. La moelle épinière présente plusieurs enrichissements liés à des processus inflammatoires, tandis que les régions corticales montrent des signatures plus variables selon les tissus et les populations cellulaires étudiées. Ces observations devront toutefois être confirmées par des analyses complémentaires et par l’expertise métier.
-
-**Remarque :** ce tableau est un résumé interprétatif. Les résultats complets de tous les pathways significatifs sont disponibles dans les fichiers d’analyse du projet.
-
-## Analyse des clusters
-
-Dans l'optique d'apporter plus de finesse dans l'analyse, on s'intéresse maintenant aux clustering de l'espace latent.
-On s'intéresse à un type de cellule (par exemple astrocyte) et on applique l'algorithme de leiden sur ce sous ensemble de cellules.
-Pour chaque cluster, on regarde quels gènes sont statistiquement plus exprimés par rapport aux autres clusters. Grâce à cet ensemble de gènes on peut identifier quel sous type de cellule est décrit par ce cluster.
-Certains clusters vont représenter des sous types similaires et doivent etre proches spatialement dans l'espace latent.
-On réalise alors pour chaque cluster un pseudobulk DE puis un GSEA pour trouver si les pathways relatifs à la maladie sont différents selon le cluster.
-
-### Exemple pour les neurones inhibiteurs :
-On applique le pipeline précédent en rassemblant les régions pour obtenir plus de cellules pour les tests statistiques.
-
+**UMAP :**
 <table style="width:100%; text-align:center;">
   <tr>
     <td>
-      <img src="sources/figures_Inhibitory/umap_condition.png" width="100%">
-      <div style="height: 40px;">Figure 2a : UMAP ALS vs Controls</div>
+      <img src="sources/umap_by_condition.png" width="100%">
+      <div style="height: 40px;">Figure 1a : UMAP ALS vs Controls</div>
     </td>
     <td>
-      <img src="sources/figures_Inhibitory/umap_region.png" width="100%">
-      <div style="height: 40px;">Figure 2b : UMAP par region</div>
+      <img src="sources/umap_by_region.png" width="100%">
+      <div style="height: 40px;">Figure 1b : UMAP par région</div>
     </td>
     <td>
-      <img src="sources/figures_Inhibitory/umap_subcluster.png" width="100%">
-      <div style="height: 40px;">Figure 2c : UMAP par cluster</div>
+      <img src="sources/umap_by_celltype.png" width="100%">
+      <div style="height: 40px;">Figure 1c : UMAP par cluster</div>
     </td>
   </tr>
 </table>
 
-<p style="text-align:center;">
-  <b>Figure 2 :</b> Clustering sur le sous ensemble des cellules "Inhibitory".
-</p>
+La figure 1 permet de visualiser comment scVI a appris à représenter les cellules dans l’espace latent. On voit avec la figure 1a que les conditions sont bien mélangées.  
+Avec la figure 1b, on observe que les régions sont également mélangées, bien que la région de la moelle épinière semble légèrement à l’écart.  
+Cela peut être interprété comme une différence biologique plutôt qu’un batch effect, même si cela reste une hypothèse. La figure 1c montre comment l’annotation de chaque cellule a été réalisée.  
+On observe que, mis à part quelques clusters mixtes, l’annotation cellulaire correspond globalement à une annotation par cluster.
 
-Pour montrer les résultats que l'on peut obtenir, on regarde maintenant spécifiquement le cluster 10.
+**Dotplot markers**
 
-| Cluster | Fréquence ALS | Fréquence CTRL | Fold change (ALS/CTRL) | p-value |
-|--------:|--------------:|---------------:|-----------------------:|--------:|
-| 10 | 0.0181 (1.81%) | 0.0080 (0.80%) | 1.18× | 5.77e-04 |
+<img src="sources/dotplot.png" width="100%">
 
+Le dotplot des marqueurs permet de visualiser le score moyen des cellules dans chaque cluster par type cellulaire.  
+Lorsque le cluster est bien homogène, on observe une seule couleur vive sur la ligne. Lorsqu’il est mixte, plusieurs couleurs d’intensité similaire sont présentes.  
+On observe qu’il existe de nombreux clusters correspondant à des neurones ou à des oligodendrocytes.
 
-Le cluster 10 représente **1.81%** des cellules dans les échantillons ALS contre **0.80%** dans les contrôles, soit une **augmentation relative de 1.18×** chez ALS. La différence est statistiquement significative (*p* = 5.77 × 10⁻⁴).
+**Autres métriques :**
 
+On regarde différentes métriques par cluster :
 
-| Rang | Gène | Score marqueur | LogFC | p-value |
-|---|---|---:|---:|---:|
-| 1 | OLFM3 | 48.94 | 4.24 | 0 |
-| 2 | RGS12 | 48.51 | 3.43 | 0 |
-| 3 | CNR1 | 46.61 | 3.75 | 0 |
-| 4 | KCNQ5 | 41.45 | 2.99 | 0 |
-| 5 | ADARB2 | 41.12 | 3.57 | 0 |
-| 6 | CNTNAP4 | 40.88 | 2.99 | 0 |
-| 7 | ASIC2 | 40.80 | 2.75 | 0 |
-| 8 | KCNT2 | 40.46 | 2.83 | 0 |
-| 9 | INPP4B | 39.53 | 2.46 | 0 |
-| 10 | ALCAM | 39.39 | 2.58 | 0 |
-| 11 | CLSTN2 | 38.87 | 3.23 | 0 |
-| 12 | CADM2 | 38.80 | 1.31 | 0 |
-| 13 | SYNPR | 38.31 | 2.88 | 0 |
-| 14 | GALNTL6 | 37.27 | 3.26 | 8.36e-302 |
-| 15 | EDIL3 | 37.20 | 2.39 | 1.08e-300 |
-| 16 | OLFM1 | 35.93 | 2.49 | 1.67e-280 |
-| 17 | VWC2L | 34.96 | 2.94 | 1.48e-265 |
-| 18 | GABRA1 | 34.67 | 2.16 | 3.57e-261 |
-| 19 | CCDC85A | 34.26 | 2.34 | 3.77e-255 |
-| 20 | PTPRE | 33.95 | 2.00 | 1.59e-250 |
+- **KNN purity :** moyenne, sur l’ensemble des cellules d’un cluster, du nombre de voisins du même type que la cellule rapporté au nombre total de voisins.
+- **Patient mixing :** moyenne, sur l’ensemble des cellules d’un cluster, du nombre de voisins provenant de patients différents rapporté au nombre total de voisins.
+- **Silhouette :** score entre 0 et 1 indiquant si le cluster est bien séparé des autres (0 : pas du tout, 1 : parfaitement séparé).
+- **AUC separation :** différence entre l’AUC obtenue sur le ranking des gènes du type cellulaire de la cellule et le maximum des AUC obtenues pour les autres types cellulaires. Cette valeur est moyennée par cluster. Une valeur élevée indique une plus grande confiance dans l’annotation.
 
+| Cluster | KNN purity | Patient mixing | Silhouette | AUC separation |
+|---------|------------|----------------|-------------|-----------------|
+| 0  | 0.9999812 | 0.5298145472910281 | 0.10543973 | 0.5916693092796823 |
+| 1  | 0.9844248 | 0.521487596063689 | 0.034940958 | 0.0034920301094490958 |
+| 2  | 0.9891347 | 0.49445455579570013 | 0.04358642 | 0.22472557160732565 |
+| 3  | 0.8020618 | 0.43717148924873905 | 0.16762199 | 0.1764169100079639 |
+| 4  | 0.9999878 | 0.4700592235139285 | 0.14220202 | 0.8976627428042211 |
+| 5  | 0.9899557 | 0.41178039452495974 | 0.16957031 | 0.23216082930756832 |
+| 6  | 0.948381 | 0.4228526843967338 | 0.05632982 | 0.32444812139311513 |
+| 7  | 0.55159646 | 0.6017629179331307 | 0.24364752 | 0.17783326096396002 |
+| 8  | 0.92674404 | 0.4724888867491534 | 0.12217827 | 0.03533773048962496 |
+| 9  | 0.9999612 | 0.5198953386956101 | 0.004589626 | 0.6489404658074105 |
+| 10 | 0.99469155 | 0.5561152164077816 | 0.06916727 | 0.3198612577288493 |
+| 11 | 0.9829955 | 0.5124499907267572 | 0.11961709 | 0.24789364915348544 |
+| 12 | 0.94367343 | 0.6850111092121005 | 0.059464067 | 0.04988463510511021 |
+| 13 | 0.9896458 | 0.5548039678790742 | 0.11046562 | 0.22494095418044402 |
+| 14 | 0.9713554 | 0.6878297240774472 | 0.18714653 | 0.011738514470754913 |
+| 15 | 0.949202 | 0.6437130994553003 | 0.10891711 | 0.12872814535481658 |
+| 16 | 0.9858981 | 0.5987602665426933 | 0.100313924 | 0.3397257089725708 |
+| 17 | 0.82313097 | 0.603621006857334 | 0.058339335 | 0.23018063221274465 |
+| 18 | 0.87018305 | 0.48846101694915256 | 0.03274032 | 0.36126553672316375 |
+| 19 | 0.9839354 | 0.6133615167819626 | 0.2808659 | 0.010905073020753275 |
+| 20 | 0.6684354 | 0.4158246307272556 | 0.23189943 | 0.17301721704769973 |
+| 21 | 0.85055983 | 0.6191884951206985 | 0.05656174 | 0.34260400616332815 |
+| 22 | 0.93344194 | 0.5272747014115092 | 0.43014935 | 0.3043973941368079 |
+| 23 | 0.9955235 | 0.5767990373044525 | 0.24413314 | 0.24467509025270762 |
+| 24 | 0.99660283 | 0.5753282737019636 | 0.25575256 | 0.23509215757137691 |
+| 25 | 0.8459624 | 0.6455381134210154 | -0.0075063165 | 0.09857163060387492 |
+| 26 | 0.7936715 | 0.44476500697999066 | 0.10962577 | 0.15844578873894843 |
+| 27 | 0.9905133 | 0.621832358674464 | 0.37589124 | 0.5012183235867447 |
+| 28 | 0.944898 | 0.4581254724111867 | 0.05955302 | 0.5410997732426304 |
+| 29 | 0.9811578 | 0.6133181990162694 | 0.40367448 | 0.20332009080590235 |
+| 30 | 0.9141892 | 0.5608671171171171 | 0.19382991 | 0.5132319819819819 |
+| 31 | 0.86330724 | 0.32803284807764094 | 0.39451948 | 0.35610302351623746 |
+| 32 | 0.8765499 | 0.6434860736747529 | 0.25066102 | 0.4773135669362084 |
+| 33 | 0.96028364 | 0.4815602836879433 | 0.20630193 | 0.5379939209726443 |
+| 34 | 0.835775 | 0.44161358811040335 | 0.3277884 | 0.2022292993630574 |
+| 35 | 0.9972056 | 0.6513639387890885 | 0.4060737 | 0.2719560878243513 |
+| 36 | 0.9184629 | 0.4070175438596491 | 0.23307657 | 0.3571428571428572 |
+| 37 | 0.9897763 | 0.3691160809371672 | 0.2955707 | 0.057507987220447254 |
+| 38 | 0.9984762 | 0.5169523809523809 | — | 0.020000000000000018 |
 
-Ce tableau liste les gènes les plus caractéristiques du cluster 10. Ils servent à identifier ce groupe de cellules et à mieux comprendre son profil biologique.
-N'étant pas biologiste, je ne peux pas dire à quel sous type il correspond. Il semblerait que ce soit des neurones inhibiteurs relativement matures et spécialisés dans la communication synaptique après recherche sur internet.
+Ces métriques semblent indiquer que, malgré le fait que certains clusters soient probablement des artefacts, de l'information biologique est présente dans cet espace.  
+Les cellules sont regroupées par type et mélangées entre patients. Les clusters semblent plutôt former un continuum au vu des scores de silhouette. Les annotations paraissent relativement robustes au regard des valeurs d’AUC separation.
 
-| Database | Pathway | NES | FDR | Direction |
-|---|---|---:|---:|---|
-| MSigDB_Hallmark_2020 | Oxidative Phosphorylation | 2.098 | 0.00146 | ALS_up |
-| Reactome_2022 | Neurexins And Neuroligins (R-HSA-6794361) | -1.988 | 0.00255 | CTRL_up |
-| MSigDB_Hallmark_2020 | Adipogenesis | 1.943 | 0.00365 | ALS_up |
-| Reactome_2022 | Protein-protein Interactions At Synapses (R-HSA-6794362) | -1.990 | 0.00509 | CTRL_up |
-| MSigDB_Hallmark_2020 | Myc Targets V1 | 1.868 | 0.00535 | ALS_up |
-| Reactome_2022 | Translation (R-HSA-72766) | 2.045 | 0.00893 | ALS_up |
-| Reactome_2022 | Metabolism Of Amino Acids And Derivatives (R-HSA-71291) | 1.913 | 0.01079 | ALS_up |
-| Reactome_2022 | Cellular Response To Starvation (R-HSA-9711097) | 1.936 | 0.01160 | ALS_up |
-| Reactome_2022 | L13a-mediated Translational Silencing Of Ceruloplasmin Expression (R-HSA-156827) | 1.914 | 0.01233 | ALS_up |
-| Reactome_2022 | Influenza Infection (R-HSA-168255) | 1.876 | 0.01298 | ALS_up |
-| Reactome_2022 | Formation Of A Pool Of Free 40S Subunits (R-HSA-72689) | 1.872 | 0.01302 | ALS_up |
-| Reactome_2022 | Peptide Chain Elongation (R-HSA-156902) | 1.865 | 0.01305 | ALS_up |
-| Reactome_2022 | Cap-dependent Translation Initiation (R-HSA-72737) | 1.942 | 0.01339 | ALS_up |
-| MSigDB_Hallmark_2020 | Protein Secretion | 1.748 | 0.02446 | ALS_up |
-| MSigDB_Hallmark_2020 | Fatty Acid Metabolism | 1.608 | 0.06833 | ALS_up |
+### Pseudobulk DE par cellules 
 
-Interprétation avec internet : Ce cluster pourrait représenter des neurones inhibiteurs qui, dans ALS, montrent un état de stress / compensation métabolique avec augmentation des besoins énergétiques et de la machinerie de synthèse protéique, tandis que des fonctions synaptiques semblent relativement plus préservées ou dominantes chez les contrôles.
+Il faut faire très attention lorsque l’on manipule les counts bruts des cellules. Dès que l’on souhaite les comparer, il faut garder à l’esprit que le batch effect est présent. 
 
-### Exemple avec astrocytes
+Lorsque l’on réalise un DE, par exemple, on ne peut pas comparer directement cellule à cellule.  
+Pour cela, on réalise un pseudobulk : on somme les counts de chaque cellule par patient, et ce pour chaque type cellulaire.  
+Cela permet de diminuer le bruit normal dans les données et d’éviter un faux sentiment de confiance lié au grand nombre de cellules corrélées (au sein d’un même patient).  
+Ce pseudobulk ramène le test statistique à une échelle biologique pertinente : ce sont les individus qui sont biologiquement différents, pas les cellules.  
 
-Le code fourni permet aussi de faire l'étude des sous-clusters par région. En faisant la meme démarche que pour les 'Inhibitory'. On commence par regarder le cluster 5, car il semble statistiquement plus enrichi que les contrôles.  
+Ce sont ces counts en pseudobulk qui sont passés à edgeR. edgeR va modéliser ce qui relève du batch effect (différences inter-patients) et ce qui provient réellement de la condition (et d’autres facteurs si on les inclut dans le modèle).
 
-| Cluster | Proportion ALS | Proportion CTRL | Effet (log2FC) | p-value |
-|---|---:|---:|---:|---:|
-| 5 | 0.0483 | 0.0036 | 3.76 | 3.58e-06 |
-
-Ce sous-type représente **~4.8 % des astrocytes chez ALS** contre **~0.36 % chez CTRL**, soit une augmentation marquée.
-
-
-
-**Top markers du cluster 5**
-
-| Gène | Score | logFC | p-value |
-|---|---:|---:|---:|
-| CD44 | 99.66 | 4.15 | 0 |
-| GLIS3 | 89.52 | 2.60 | 0 |
-| MAN1C1 | 84.87 | 3.41 | 0 |
-| TPST1 | 84.70 | 2.92 | 0 |
-| DCLK1 | 80.88 | 3.57 | 0 |
-| ARHGEF3 | 79.31 | 2.87 | 0 |
-| TENM4 | 77.87 | 2.40 | 0 |
-| DTNA | 77.38 | 1.44 | 0 |
-| MACF1 | 77.02 | 1.39 | 0 |
-| CADPS | 76.56 | 3.02 | 0 |
-| AQP1 | 69.41 | 2.97 | 0 |
+D’une manière générale, dès que l’on ne travaille pas dans l’espace latent, il faut prendre en compte le batch effect d’une manière ou d’une autre.
 
 
-**Signaux diminués dans la moelle épinière**
+### Pseudobulk DE par type cellulaire
 
-| Pathway | NES | padj |
-|---|---:|---:|
-| Cholesterol Homeostasis | -1.71 | 0.0367 |
-| Peptide Chain Elongation | -1.72 | 0.0440 |
-| Translation Elongation | -1.72 | 0.0440 |
-| rRNA Processing | -1.73 | 0.0383 |
+On travaille sur le sous-ensemble des cellules correspondant au même type cellulaire (l’analyse est réalisée séparément pour chaque type).  
+On se pose les questions suivantes :
+- quels gènes sont globalement plus exprimés chez les patients malades par rapport aux patients sains ?
+- quels gènes diffèrent selon la région ?
+- quels gènes présents chez les malades diffèrent entre les régions ?
+
+On modélise le problème de la manière suivante pour edgeR :
+
+design = ~ condition * region
+
+L’idée est de définir un modèle avec des coefficients &beta; qui expliquent l’expression d’un gène (un vecteur &beta; par gène), idéalement pour tous les échantillons, de la manière suivante :
+
+log(&mu;<sub>i</sub>) = X<sub>i</sub> &beta; avec &mu;<sub>i</sub> la valeur moyenne du gène pour l’échantillon i et X<sub>i</sub> la ligne de la design matrix correspondante.
+
+#### Exemple :
+
+Prenons des données exemples pour illustrer ce qu’il se passe avec deux conditions et 3 régions :
+
+| sample | condition | region | counts (gene X) |
+|--------|-----------|--------|------------------|
+| S1     | ALS       | A      | 10               |
+| S2     | CTRL      | A      | 12               |
+| S3     | ALS       | B      | 20               |
+| S4     | CTRL      | B      | 24               |
+| S5     | ALS       | C      | 5                |
+| S6     | CTRL      | C      | 7                |
+
+Ce que l’on appelle design correspond à définir à quoi correspond le vecteur &beta; :
+
+- β0 (Intercept)  
+  → expression de base (ALS + région A)
+
+- β_conditionCTRL  
+  → effet global CTRL vs ALS (dans la région de référence A)
+
+- β_regionB  
+  → effet de la région B vs région A (chez ALS)
+
+- β_regionC  
+  → effet de la région C vs région A (chez ALS)
+
+- β_conditionCTRL:regionB  
+  → différence du contraste CTRL vs ALS spécifiquement en région B
+
+- β_conditionCTRL:regionC  
+  → différence du contraste CTRL vs ALS spécifiquement en région C
+
+Le vecteur &beta; est donc :  
+(β0, β_conditionCTRL, β_regionB, β_regionC, β_conditionCTRL:regionB, β_conditionCTRL:regionC)
+
+Voici maintenant X, la design matrix correspondant aux données :
+
+Référence :
+- condition = ALS  
+- region = A  
+
+| sample | Intercept | conditionCTRL | regionB | regionC | conditionCTRL:regionB | conditionCTRL:regionC |
+|--------|-----------|--------------|---------|---------|------------------------|------------------------|
+| S1     | 1         | 0            | 0       | 0       | 0                      | 0                      |
+| S2     | 1         | 1            | 0       | 0       | 0                      | 0                      |
+| S3     | 1         | 0            | 1       | 0       | 0                      | 0                      |
+| S4     | 1         | 1            | 1       | 0       | 1                      | 0                      |
+| S5     | 1         | 0            | 0       | 1       | 0                      | 0                      |
+| S6     | 1         | 1            | 0       | 1       | 0                      | 1                      |
+
+Concrètement, prenons par exemple l’échantillon 6. Le modèle essaye d’estimer les betas de la manière suivante :
+
+log(7) = β0 + β_conditionCTRL + β_regionC + β_conditionCTRL:regionC
+
+Pour l’échantillon 2 :
+
+log(12) = β0 + β_conditionCTRL
+
+Pour l’échantillon i :
+
+log(&mu;<sub>i</sub>) = X<sub>i</sub> &beta;
+
+**estimation des betas :**
+
+Pour estimer ces valeurs, le modèle suppose que, pour un gène, les valeurs des échantillons suivent une loi NB (ce qui est cohérent biologiquement).  
+L’idée est de trouver les betas tels que la valeur moyenne de la loi NB, &mu; = exp(X &beta;), corresponde au mieux aux données.
+
+**calcul des logFC, pvalue et FDR :**
+
+On estime également la variance de la loi NB, qui va servir à calculer l’incertitude sur les valeurs des betas.
+
+Cette incertitude permet de tester statistiquement chaque beta contre l’hypothèse nulle. On en déduit la p-value puis le FDR grâce à ce test.  
+Les valeurs des betas correspondent directement aux logFC définis par le design.
+
+#### Limites du DE :
+
+Comme expliqué dans la section relative à scVI, une limite importante de la modélisation dans cette étude avec edgeR est que l’on ne sépare toujours pas complètement l’effet biologique lié aux différences entre régions de l’effet technique lié au batch effect.
+Les résultats doivent donc être interprétés avec prudence.
+
+### GSEA
+
+On part des résultats du DE (logFC, t-stat et FDR au niveau des gènes) et on les transforme en une analyse de type GSEA (Gene Set Enrichment Analysis).  
+Le principe de la GSEA est de ne pas analyser les gènes individuellement, mais de tester si des ensembles de gènes (pathways biologiques comme Hallmark ou Reactome) sont globalement enrichis en haut ou en bas d’un classement de gènes.  
+
+Ici, les gènes sont d’abord nettoyés et agrégés, puis classés selon un score basé sur le t-statistique (qui combine effet et incertitude). Ce ranking est ensuite utilisé pour la GSEA en mode “preranked”, où l’algorithme vérifie si les gènes d’un pathway sont statistiquement concentrés aux extrémités du classement.  
+On répète cela pour chaque combinaison de type cellulaire et de contrast (condition, région ou interaction), puis on calcule pour chaque pathway un NES (score d’enrichissement normalisé) et une FDR au niveau des pathways.  
+On conserve les résultats significatifs et les plus forts pour l’interprétation biologique.
+
+### Résultats
+
+Voici un résumé réalisé avec un LLM sur les différents pathways obtenus avec GSEA. N'étant pas biologiste, ces résultats sont donc à interpréter avec une très grande prudence. 
+On ne conserve que les pathways avec un NES > 1.5, une FDR < .05 et un nombre minimum de gènes dans le pathway de 10 (ou NES > 1.2, une FDR < .1 et un nombre minimum de gènes dans le pathway de 5 pour résultats exploratoire).
+La liste de tous les pathways est disponible dans `sources/TOP_PATHWAYS.csv`.
 
 
+Astrocytes :
+
+Les astrocytes montrent une signature dominante région_FX marquée par une forte activation du métabolisme mitochondrial (OXPHOS, import mitochondrial) et des voies de sensing des nutriments (mTORC1, Myc, starvation response), indiquant une reprogrammation énergétique intrinsèque. Les processus de localisation protéique et de réorganisation intracellulaire confirment cet axe métabolique et structural. En parallèle, les voies synaptiques sont fortement enrichies mais principalement classées en interaction_SC / interaction_FX, suggérant un rôle de modulation glie–neurone plutôt qu’une activité neuronale propre. Les signaux de stress protéique sont présents mais globalement contextuels, tandis que les voies immuno-inflammatoires en global_condition apparaissent plutôt réprimées.
+
+Endothelial :
+
+Profil global dominé par une forte reprogrammation énergétique avec activation des voies mitochondriales (OXPHOS, respiration, glycolyse) et du sensing des nutriments (mTORC1, starvation), indiquant un état métabolique très dynamique dépendant de l’énergie disponible.
+
+On observe en parallèle une signature neuro-like marquée (synapses, neurotransmission, GABA/glutamate, canaux ioniques), suggérant une forte plasticité de signalisation plutôt qu’un programme purement vasculaire classique.
+
+Les modules de stress (hypoxie, UV, TNF/NF-κB, IFNγ) montrent un état cellulaire activé et sensible à l’environnement inflammatoire et hypoxique, avec adaptation métabolique associée.
+
+Enfin, les directions régionales FX/SC/MCX indiquent une séparation nette entre un programme métabolique (FX), un module signalisation/immunité (SC), et une composante de remodelage/interaction synaptique et transport (MCX), avec quelques signatures globalement répressives sur certains axes inflammatoires et synaptiques.
+
+Excitatory :
+
+Le profil est dominé par une très forte activation des programmes de stress protéique et chaperonnes (HSF1, HSP70/HSP90, heat shock), indiquant une charge protéotoxique élevée et une réponse adaptative majeure au stress cellulaire.
+
+On observe également une activation nette de modules inflammatoires et immuno-like (neutrophil degranulation, ROS/transport vésiculaire), suggérant un état excitatoire associé à des processus de stress et de signalisation extracellulaire intense.
+
+Les voies de signalisation hormonale et de croissance (récepteurs stéroïdiens, estrogen-dependent expression, mTORC1, MYC) indiquent une forte reprogrammation transcriptionnelle couplée à des axes métaboliques et de prolifération.
+
+Enfin, le métabolisme énergétique mitochondrial est très présent mais contrasté selon les modules (OXPHOS à la fois activé et réorganisé selon les régions FX/MCX), ce qui suggère une adaptation énergétique plutôt qu’un simple gain ou perte d’activité.
+
+Inhibitory :
+
+Signature fortement enrichie en métabolisme énergétique (OXPHOS, TCA, glycolyse) avec une cohérence élevée entre régions MCX et FX.
+Présence dominante de processus de transport d’électrons mitochondrial et de régulation du fer, suggérant un état énergétique stable mais contraint.
+Enrichissement important des voies de signalisation immunitaire et apoptotique, indiquant un couplage métabolisme–stress cellulaire.
+Les interactions synaptiques et GABAergiques restent présentes mais secondaires, compatibles avec un rôle régulateur plus que excitateur.
 
 
-Le cluster 5 semble correspondre à un sous-type d’astrocytes rare chez les contrôles mais fortement augmenté dans ALS.  
+Neurons :
+
+Les résultats montrent une forte activation du métabolisme mitochondrial et des programmes Myc/mTORC1 dans plusieurs régions, notamment MCX, FX et Neuron global, avec enrichissement de l’oxydative phosphorylation et du transport mitochondrial. En parallèle, on observe une activation des réponses au stress (HSF1, HSP, UPR) dans ces mêmes régions, suggérant une forte demande cellulaire. À l’inverse, les voies de transmission synaptique (récepteurs, canaux ioniques, NMDA, GABA) sont globalement inhibées, surtout en SC et MCX. Globalement, le profil évoque une bascule vers un état métabolique actif mais une réduction de la signalisation neuronale fonctionnelle.
+
+Oligodendrocytes :
+
+On observe une forte activation des programmes mitochondriaux, notamment Oxidative Phosphorylation (régions FX, SC et MCX), suggérant une demande énergétique élevée.
+Les signatures de signalisation synaptique / neuronal system sont aussi très représentées, surtout en régions FX et MCX, avec des gènes liés aux neurotransmetteurs (GABA, glutamate, synapse).
+Des voies de stress cellulaire et réponse aux protéines chaperonnes (heat shock, HSP90/HSPA) sont enrichies dans plusieurs régions (FX, MCX, interaction FX).
+On note également des signaux immuno-viraux (SARS-CoV, TCR, allograft rejection) et de signalisation intracellulaire (DARPP-32, G alpha, NF-kB) principalement en régions FX et MCX.
+Globalement, les enrichissements suggèrent un état oligodendrocytaire actif, métaboliquement élevé et fortement couplé à des interactions neuronales et au stress cellulaire.
+
+Pericytes :
+
+On observe une forte activation du métabolisme énergétique avec Oxidative Phosphorylation en régions FX et MCX, indiquant une activité mitochondriale élevée.
+Les voies de signalisation vasculaire et métabolique sont très représentées, notamment insulin receptor signaling, PPARα / lipid metabolism et glycolyse, surtout en région FX.
+Un ensemble important de signatures synaptiques et neuronales (NMDA, glutamate, synapses, plasticité) apparaît en région MCX, suggérant une forte interaction neuro-vasculaire.
+On retrouve également des modules de stress cellulaire, hypoxie et ROS, ainsi que des programmes de réponse inflammatoire et immunitaire (IFN-γ, inflammation, apoptose), répartis entre FX, MCX et SC.
+Globalement, le profil indique un état de péricyte très actif, couplant métabolisme énergétique, réponse au stress et communication avec le système neuronal et vasculaire.
 
 ## Get Started
 
@@ -571,18 +582,34 @@ MARKERS = {
     "Pericyte": ["PDGFRB", "RGS5"]
 }
 
-pipe.run_annotation(MARKERS)
+pipe.run_cluster_annotation(MARKERS)
 ```
 
-Ajoute une annotation `cell_type` aux cellules à partir des gènes marqueurs.
+Génère un fichier `final_cluster_labels.csv` correspondant à l'annotation faite pour chaque cluster.
+
+### Annotation cellulaire
+
+```python
+pipe.run_cell_annotation(MARKERS)
+```
+
+Ajoute une clé `celltype_pred` au adata et crée un nouveau fichier .h5ad correspondant à l'annotation pour chaque cellule.
+
+### Annotation cellulaire
+
+```python
+pipe.run_metrics()
+```
+
+Calcule toutes les metriques présentées et stocke les résultats dans des .csv dans le dossier annotation.
 
 ### Differential Expression (pseudobulk)
 
 ```python
-pipe.run_de(split_by=("cell_type", "region"))
+pipe.run_de()
 ```
 
-Réalise une analyse d’expression différentielle par patient.
+Réalise une analyse d’expression différentielle comme présentée.
 
 ### Enrichissement biologique (GSEA)
 
@@ -591,17 +618,6 @@ pipe.run_gsea()
 ```
 
 Calcule les pathways enrichis à partir des résultats DE.
-
-### Sous-clustering d’un type cellulaire
-
-```python
-pipe.run_subcluster_analysis(
-    "Astrocyte",
-    split_by=("subcluster", "region")
-)
-```
-
-Analyse les sous-populations d’un type cellulaire donné.
 
 ---
 

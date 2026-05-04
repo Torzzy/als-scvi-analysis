@@ -1,351 +1,146 @@
-import os
-import glob
-import numpy as np
 import pandas as pd
+import numpy as np
+from pathlib import Path
 import gseapy as gp
 
-import utils
-
-
-def _ranking(df):
-    """
-    Old behavior:
-    score = sign(logFC) * -log10(fdr)
-    """
-
-    d = df.copy()
-
-    if "gene" not in d.columns:
-        if "index" in d.columns:
-            d = d.rename(columns={"index": "gene"})
-        else:
-            d = d.reset_index().rename(columns={"index": "gene"})
-
-    required = ["gene", "logFC", "fdr"]
-    for col in required:
-        if col not in d.columns:
-            raise ValueError(f"Missing required column: {col}")
-
-    d = d.dropna(subset=required).copy()
-
-    d["gene"] = d["gene"].astype(str)
-    d["logFC"] = pd.to_numeric(d["logFC"], errors="coerce")
-    d["fdr"] = pd.to_numeric(d["fdr"], errors="coerce")
-    d = d.dropna(subset=["logFC", "fdr"])
-
-    d["fdr"] = d["fdr"].clip(lower=1e-300, upper=1.0)
-
-    d["score"] = np.sign(d["logFC"]) * (-np.log10(d["fdr"]))
-    d = d[np.isfinite(d["score"])]
-
-    d = d.drop_duplicates(subset="gene", keep="first")
-
-    rng = np.random.default_rng(42)
-    d["score"] += rng.normal(0, 1e-9, len(d))
-
-    d = d.sort_values("score", ascending=False)
-
-    return d[["gene", "score"]]
-
-
-def _sort_results(df):
-    if "FDR q-val" in df.columns:
-        return df.sort_values(["FDR q-val", "NES"], ascending=[True, False])
-    if "NES" in df.columns:
-        return df.sort_values("NES", ascending=False)
-    return df
-
-
-def _top_pathways(df, n=10):
-    if df.empty:
-        return pd.DataFrame()
-
-    d = _sort_results(df.copy())
-
-    keep = [
-        c for c in [
-            "comparison",
-            "cell_type",
-            "region",
-            "geneset_db",
-            "Term",
-            "NES",
-            "FDR q-val",
-        ]
-        if c in d.columns
-    ]
-
-    d = d[keep].head(n).copy()
-
-    d = d.rename(columns={
-        "geneset_db": "database",
-        "Term": "pathway",
-        "FDR q-val": "FDR",
-    })
-
-    if "NES" in d.columns:
-        d["direction"] = np.where(d["NES"] > 0, "ALS_up", "CTRL_up")
-
-    return d
-
-
-def _parse_comparison_name(name):
-    """
-    Parse:
-    Excitatory_FCX_DE -> (Excitatory, FCX)
-    Astrocyte_Motor_Cortex_DE -> (Astrocyte, Motor_Cortex)
-    """
-
-    stem = name.replace("_DE", "")
-
-    known_regions = [
-        "FCX",
-        "TCX",
-        "SC",
-        "HIP",
-        "FX",
-        "MCX",
-        "Motor_Cortex",
-        "Spinal_Cord",
-        "Frontal_Cortex",
-        "Temporal_Cortex",
-    ]
-
-    for rg in sorted(known_regions, key=len, reverse=True):
-        suffix = "_" + rg
-        if stem.endswith(suffix):
-            return stem[:-len(suffix)], rg
-
-    parts = stem.split("_")
-    if len(parts) >= 2:
-        return "_".join(parts[:-1]), parts[-1]
-
-    return stem, "Unknown"
+from utils import reset_folder
 
 
 def run_gsea(
-    de_dir,
+    summary_csv,
     output_dir,
-    gene_sets=("MSigDB_Hallmark_2020", "Reactome_2022"),
-    min_genes_ranked=100,
-    min_sig_genes=0,
-    fdr_threshold=0.25,
-    min_size=10,
-    max_size=500,
+    celltype_key="celltype_pred",
+    min_genes=10,
     permutation_num=1000,
-    processes=4,
-    top_n=10,
+    fdr_threshold=0.05,
+    nes_threshold=1.5,
+    top_n=5
 ):
-    """
-    Exécute une analyse GSEA (Gene Set Enrichment Analysis) à partir de
-    résultats d'expression différentielle.
 
-    La fonction parcourt les fichiers DE, construit un ranking de gènes,
-    lance un preranked GSEA pour chaque base de gènes fournie, filtre les
-    voies significatives, puis sauvegarde les résultats détaillés ainsi que
-    des tableaux résumés des top pathways enrichis.
+    output_dir = Path(output_dir)
+    reset_folder(output_dir)
 
-    :param de_dir: Dossier contenant les fichiers de résultats DE
-        (`*_DE.csv`).
-    :type de_dir: str | Path
+    df = pd.read_csv(summary_csv)
 
-    :param output_dir: Dossier de sortie des résultats GSEA.
-    :type output_dir: str | Path
+    gene_sets = {
+        "hallmark": "MSigDB_Hallmark_2020",
+        "reactome": "Reactome_2022",
+    }
 
-    :param gene_sets: Bases de signatures biologiques utilisées pour GSEA.
-    :type gene_sets: tuple[str, ...]
+    results_all = []
 
-    :param min_genes_ranked: Nombre minimal de gènes requis dans le ranking
-        pour lancer GSEA.
-    :type min_genes_ranked: int
+    # =========================
+    # GSEA LOOP
+    # =========================
+    for ct in df[celltype_key].unique():
 
-    :param min_sig_genes: Nombre minimal de gènes significatifs (selon FDR)
-        requis pour analyser une comparaison.
-    :type min_sig_genes: int
+        print(f"\n=== CELLTYPE: {ct} ===")
 
-    :param fdr_threshold: Seuil de significativité utilisé pour filtrer
-        les résultats GSEA.
-    :type fdr_threshold: float
+        df_ct = df[df[celltype_key] == ct]
+        ct_dir = output_dir / ct
+        ct_dir.mkdir(exist_ok=True)
 
-    :param min_size: Taille minimale des gene sets testés.
-    :type min_size: int
+        for contrast in df_ct["contrast"].unique():
 
-    :param max_size: Taille maximale des gene sets testés.
-    :type max_size: int
+            print(f"  -> {contrast}")
 
-    :param permutation_num: Nombre de permutations utilisées par GSEA.
-    :type permutation_num: int
+            sub = df_ct[df_ct["contrast"] == contrast].copy()
 
-    :param processes: Nombre de processus parallèles utilisés.
-    :type processes: int
+            # -------------------------
+            # CLEANING
+            # -------------------------
+            sub = sub.dropna(subset=["gene", "logfc", "fdr", "t_stat"])
+            # REMOVE HOUSEKEEPING GENES
+            sub = sub[~sub["gene"].str.match(r"^RPL|^RPS|^MT-")]
 
-    :param top_n: Nombre de pathways principaux à conserver par comparaison.
-    :type top_n: int
-
-    :return: Tableau récapitulatif de l'ensemble des enrichissements détectés.
-    :rtype: pandas.DataFrame
-    """
-
-    utils.reset_folder(output_dir)
-
-    files = glob.glob(os.path.join(de_dir, "*_DE.csv"))
-    if not files:
-        print("No DE files found.")
-        return pd.DataFrame()
-
-    all_results = []
-
-    for fp in files:
-
-        name = os.path.basename(fp).replace(".csv", "")
-        print(f"\n=== {name} ===")
-
-        try:
-            df = pd.read_csv(fp)
-        except Exception as e:
-            print(f"Read failed: {e}")
-            continue
-
-        if len(df) < min_genes_ranked:
-            print("Skipped: too few genes")
-            continue
-
-        if "fdr" not in df.columns:
-            print("Skipped: no fdr column")
-            continue
-
-        n_sig = int((pd.to_numeric(df["fdr"], errors="coerce") < fdr_threshold).sum())
-
-        if n_sig < min_sig_genes:
-            print(f"Skipped: only {n_sig} significant genes")
-            continue
-
-        try:
-            rnk = _ranking(df)
-        except Exception as e:
-            print(f"Ranking failed: {e}")
-            continue
-
-        if len(rnk) < min_genes_ranked:
-            print("Skipped: ranking too small")
-            continue
-
-        cell_type, region = _parse_comparison_name(name)
-        comp_results = []
-
-        for gs in gene_sets:
-
-            print(f"Running {gs}")
-
-            try:
-                pre = gp.prerank(
-                    rnk=rnk,
-                    gene_sets=gs,
-                    permutation_num=permutation_num,
-                    min_size=min_size,
-                    max_size=max_size,
-                    processes=processes,
-                    seed=42,
-                    outdir=None,
-                    verbose=False,
-                )
-
-                res = pre.res2d
-
-                if res is None or res.empty:
-                    continue
-
-                res = res.copy()
-
-                if "Term" not in res.columns:
-                    res["Term"] = res.index.astype(str)
-
-                if "FDR q-val" not in res.columns or "NES" not in res.columns:
-                    continue
-
-                # old robust filtering
-                res = res[
-                    (res["FDR q-val"] < fdr_threshold) &
-                    (res["NES"].abs() > 1.2)
-                ].copy()
-
-                if res.empty:
-                    print("No robust pathway")
-                    continue
-
-                res["comparison"] = name
-                res["cell_type"] = cell_type
-                res["region"] = region
-                res["geneset_db"] = gs
-
-                res = _sort_results(res)
-
-                comp_results.append(res)
-                all_results.append(res)
-
-                out_fp = os.path.join(
-                    output_dir,
-                    f"{name}_{gs}_GSEA.csv"
-                )
-                res.to_csv(out_fp, index=False)
-
-            except Exception as e:
-                print(f"Failed {gs}: {e}")
-
-        if comp_results:
-            comp_df = pd.concat(comp_results, ignore_index=True)
-            top = _top_pathways(comp_df, n=top_n)
-
-            top_fp = os.path.join(
-                output_dir,
-                f"{name}_TOP_pathways.csv"
-            )
-            top.to_csv(top_fp, index=False)
-
-    if not all_results:
-        print("No GSEA results generated.")
-        return pd.DataFrame()
-
-    summary = pd.concat(all_results, ignore_index=True)
-    summary = _sort_results(summary)
-
-    full_fp = os.path.join(output_dir, "GSEA_summary_results.csv")
-    summary.to_csv(full_fp, index=False)
-
-    # one readable global table
-    top_rows = []
-
-    for (comp, db), sub in summary.groupby(["comparison", "geneset_db"]):
-
-        sub = _sort_results(sub).head(top_n).copy()
-
-        for _, row in sub.iterrows():
-            top_rows.append({
-                "comparison": comp,
-                "cell_type": row["cell_type"],
-                "region": row["region"],
-                "database": db,
-                "pathway": row["Term"],
-                "NES": row["NES"],
-                "FDR": row["FDR q-val"],
-                "direction": "ALS_up" if row["NES"] > 0 else "CTRL_up",
+            # collapse duplicates
+            sub = sub.groupby("gene", as_index=False).agg({
+                "logfc": "mean",
+                "fdr": "mean",
+                "t_stat": "mean"
             })
 
-    top_global = pd.DataFrame(top_rows)
+            # =========================
+            # RANKING (FIXED)
+            # =========================
+            sub["score"] = sub["t_stat"]
 
-    if not top_global.empty:
-        top_global = top_global.sort_values(
-            ["FDR", "NES"],
-            ascending=[True, False]
-        )
+            # deterministic tie-breaking (no randomness)
+            sub = sub.sort_values(
+                ["score", "gene"],
+                ascending=[False, True]
+            )
 
-        top_fp = os.path.join(output_dir, "GSEA_TOP_pathways.csv")
-        top_global.to_csv(top_fp, index=False)
+            # enforce strictly unique ranking
+            sub["score"] = sub["score"] + np.arange(len(sub)) * 1e-12
 
-        print("\n========== TOP PATHWAYS ==========\n")
-        print(top_global.to_string(index=False))
+            if len(sub) < min_genes:
+                continue
 
-    print("\nSaved:")
-    print(full_fp)
+            rnk = sub[["gene", "score"]]
 
-    return summary
+            for gs_name, gs_db in gene_sets.items():
+
+                try:
+                    enr = gp.prerank(
+                        rnk=rnk,
+                        gene_sets=gs_db,
+                        processes=4,
+                        min_size=10,
+                        max_size=500,
+                        permutation_num=permutation_num,
+                        outdir=None,
+                        seed=42,
+                        verbose=False,
+                    )
+
+                    res = enr.res2d
+
+                    if res is None or res.empty:
+                        continue
+
+                    res["celltype"] = ct
+                    res["contrast"] = contrast
+                    res["geneset"] = gs_name
+
+                    results_all.append(res)
+
+                    # save per contrast
+                    res.to_csv(
+                        ct_dir / f"{contrast}_{gs_name}.csv",
+                        index=False
+                    )
+
+                except Exception as e:
+                    print(f"ERROR ({ct}, {contrast}, {gs_name}):", e)
+                    continue
+
+    if len(results_all) == 0:
+        raise RuntimeError("No enrichment results")
+
+    # =========================
+    # FINAL OUTPUT
+    # =========================
+    final = pd.concat(results_all, ignore_index=True)
+    final.to_csv(output_dir / "ALL_ENRICHMENTS.csv", index=False)
+
+    # =========================
+    # FILTER SIGNIFICANT
+    # =========================
+    sig = final[
+        (final["FDR q-val"] < fdr_threshold) &
+        (final["NES"].abs() > nes_threshold)
+    ].copy()
+
+    # =========================
+    # TOP PATHWAYS
+    # =========================
+    top = (
+        sig.sort_values("NES", ascending=False)
+           .groupby(["celltype", "contrast", "geneset"])
+           .head(top_n)
+    )
+
+    top.to_csv(output_dir / "TOP_PATHWAYS.csv", index=False)
+
+    return final, top

@@ -1,7 +1,8 @@
 import os
 import tempfile
 import subprocess
-import joblib
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -10,292 +11,265 @@ from .io import load_adata
 from .utils import reset_folder
 
 
-R_SCRIPT = r'''
+# ======================================================
+# R SCRIPT (ROBUST EDGE R DESIGN + GSEA RANKING)
+# ======================================================
+R_SCRIPT = r"""
 suppressMessages(library(edgeR))
 
-args <- commandArgs(trailingOnly=TRUE)
-counts <- read.csv(args[1], row.names=1, check.names=FALSE)
-meta   <- read.csv(args[2], stringsAsFactors=FALSE)
-outf   <- args[3]
-g1     <- args[4]
-g2     <- args[5]
+meta <- read.csv("__META__")
+counts <- read.csv("__COUNTS__", row.names=1)
 
-meta$group <- factor(meta$group, levels=c(g2, g1))
+meta$condition <- factor(meta$condition)
+meta$region <- factor(meta$region)
+
+design <- model.matrix(~ condition * region, data=meta)
 
 y <- DGEList(counts=counts)
-keep <- filterByExpr(y, group=meta$group)
+
+keep <- filterByExpr(y, design)
 y <- y[keep,,keep.lib.sizes=FALSE]
 
 y <- calcNormFactors(y)
-
-design <- model.matrix(~ group, data=meta)
-
 y <- estimateDisp(y, design)
+
 fit <- glmQLFit(y, design)
-res <- topTags(glmQLFTest(fit, coef=2), n=Inf)$table
 
-res$gene <- rownames(res)
-write.csv(res, outf, row.names=FALSE)
-'''
+# ======================================================
+# SAFE TEST FUNCTION (WITH GSEA RANKING)
+# ======================================================
+safe_test <- function(coef_name, out_name) {
 
+    if (!(coef_name %in% colnames(design))) {
+        cat("SKIP:", coef_name, "\n")
+        return(NULL)
+    }
 
+    res <- glmQLFTest(fit, coef=coef_name)
+    tt <- topTags(res, n=Inf)$table
+    tt$gene <- rownames(tt)
+
+    # FORCE FDR ALWAYS
+    tt$FDR <- p.adjust(tt$PValue, method="BH")
+
+    # ======================================================
+    # GSEA RANKING FEATURES (ADDED ONLY, NOTHING BROKEN)
+    # ======================================================
+
+    tt$logFC_rank <- tt$logFC
+
+    # pseudo t-statistic (edgeR standard proxy)
+    if ("F" %in% colnames(tt)) {
+        tt$t_stat <- sign(tt$logFC) * sqrt(tt$F)
+    } else if ("LR" %in% colnames(tt)) {
+        tt$t_stat <- sign(tt$logFC) * sqrt(tt$LR)
+    } else {
+        tt$t_stat <- tt$logFC
+    }
+
+    # FINAL GSEA RANKING SCORE
+    tt$rank_score <- tt$t_stat
+
+    write.csv(tt, paste0("__OUT__", "_", out_name, ".csv"), row.names=FALSE)
+}
+
+# ======================================================
+# CONTRASTS
+# ======================================================
+
+# 1) GLOBAL ALS vs CTRL
+safe_test("conditionCTRL", "global_condition")
+
+# 2) REGION EFFECTS
+for (r in c("FX","MCX","SC")) {
+    safe_test(paste0("region", r), paste0("region_", r))
+}
+
+# 3) INTERACTIONS ALS × REGION
+for (r in c("FX","MCX","SC")) {
+    safe_test(
+        paste0("conditionCTRL:region", r),
+        paste0("interaction_", r)
+    )
+}
+"""
+
+# ======================================================
+# MAIN PIPELINE
+# ======================================================
 def run_pseudobulk_de(
     latent_path,
-    classifier_path,
     output_dir,
-    groupby="condition",
-    split_by=("cell_type", "region"),
+    celltype_key="celltype_pred",
+    condition_key="condition",
+    region_key="region",
+    patient_key="patient_id",
     group1="ALS",
     group2="CTRL",
-    patient_key="patient_id",
     min_cells=15,
     min_patients=2,
-    min_total_cells=30,
-    conf_score=0.95,
-    conf_margin=0.50,
-    reclassify=True
 ):
-    """
-    Réalise une analyse d'expression différentielle pseudobulk entre deux groupes
-    (ex. ALS vs CTRL) à partir de données single-cell annotées.
 
-    Les cellules sont d'abord annotées via un classifieur entraîné sur l'espace
-    latent scVI. Les cellules sont ensuite filtrées selon leur niveau de confiance,
-    agrégées par patient pour former des profils pseudobulk, puis comparées avec
-    edgeR pour chaque combinaison définie par `split_by`.
-
-    :param latent_path: Chemin vers le fichier .h5ad contenant les données
-        et la représentation latente scVI.
-    :type latent_path: str | Path
-
-    :param classifier_path: Chemin vers le classifieur sauvegardé (.pkl).
-    :type classifier_path: str | Path
-
-    :param output_dir: Dossier de sortie des résultats DE.
-    :type output_dir: str | Path
-
-    :param groupby: Colonne de `adata.obs` définissant les groupes à comparer.
-    :type groupby: str
-
-    :param split_by: Colonnes utilisées pour stratifier les analyses
-        (ex. type cellulaire, région).
-    :type split_by: tuple[str, ...]
-
-    :param group1: Nom du premier groupe de comparaison.
-    :type group1: str
-
-    :param group2: Nom du second groupe de comparaison.
-    :type group2: str
-
-    :param patient_key: Colonne identifiant les patients / échantillons.
-    :type patient_key: str
-
-    :param min_cells: Nombre minimal de cellules par patient pour construire
-        un pseudobulk.
-    :type min_cells: int
-
-    :param min_patients: Nombre minimal de patients par groupe requis
-        pour effectuer le test statistique.
-    :type min_patients: int
-
-    :param min_total_cells: Nombre minimal total de cellules requis
-        pour analyser un sous-ensemble.
-    :type min_total_cells: int
-
-    :param conf_score: Score minimal de probabilité du classifieur
-        pour conserver une cellule.
-    :type conf_score: float
-
-    :param conf_margin: Écart minimal entre la meilleure et la seconde
-        probabilité prédite pour conserver une cellule.
-    :type conf_margin: float
-
-    :return: None
-    :rtype: None
-    """
-
+    output_dir = Path(output_dir)
     reset_folder(output_dir)
 
     adata = load_adata(latent_path)
-    adata.obs_names_make_unique()
 
-    clfobj = joblib.load(classifier_path)
-    clf = clfobj["model"]
-    le = clfobj.get("label_encoder", None)
-
-    X_latent = adata.obsm["X_scVI"]
-
-    pred_enc = clf.predict(X_latent)
-    pred = le.inverse_transform(pred_enc) if le is not None else pred_enc
-    adata.obs["cell_type"] = pred
-
-    # --------------------------------------------------
-    # Reclassification + confidence mask
-    # --------------------------------------------------
-    if reclassify:
-        clfobj = joblib.load(classifier_path)
-        clf = clfobj["model"]
-        le = clfobj.get("label_encoder", None)
-
-        X_latent = adata.obsm["X_scVI"]
-
-        pred_enc = clf.predict(X_latent)
-        pred = le.inverse_transform(pred_enc) if le is not None else pred_enc
-        adata.obs["cell_type"] = pred
-
-        if hasattr(clf, "predict_proba"):
-            probs = clf.predict_proba(X_latent)
-
-            top1_idx = np.argmax(probs, axis=1)
-            top1_score = probs[np.arange(len(probs)), top1_idx]
-
-            probs_sorted = np.sort(probs, axis=1)
-            top2_score = probs_sorted[:, -2]
-
-            margin = top1_score - top2_score
-            conf_mask = (
-                    (top1_score > conf_score) &
-                    (margin > conf_margin)
-            )
-        else:
-            conf_mask = np.ones(adata.n_obs, dtype=bool)
-
-    else:
-        # keep all cells, no reclassification
-        conf_mask = np.ones(adata.n_obs, dtype=bool)
-
+    obs = adata.obs
     genes = adata.var_names.to_numpy()
 
-    # --------------------------------------------------
-    # Main loop
-    # --------------------------------------------------
-    grouped = adata.obs.groupby(list(split_by), observed=False).indices
+    X = adata.X.tocsr() if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
 
-    for keys, obs_idx in grouped.items():
+    for ct in obs[celltype_key].unique():
 
-        idx = np.asarray(obs_idx, dtype=int)
+        print(f"\n=== {ct} ===")
 
-        idx = idx[conf_mask[idx]]
+        ct_dir = output_dir / str(ct)
+        ct_dir.mkdir(parents=True, exist_ok=True)
 
-        # old behavior: skip small subsets
-        if len(idx) < min_total_cells:
+        mask = (obs[celltype_key] == ct).to_numpy()
+        idx_ct = np.where(mask)[0]
+
+        if len(idx_ct) == 0:
             continue
 
-        sub = adata[idx].copy()
-        obs = sub.obs.copy()
+        patient = obs[patient_key].to_numpy()[idx_ct]
+        condition = obs[condition_key].to_numpy()[idx_ct]
+        region = obs[region_key].to_numpy()[idx_ct]
 
-        # ----------------------------------------------
-        # keep patients with enough cells
-        # ----------------------------------------------
-        pats = obs[patient_key].value_counts()
-        keep_pat = pats[pats >= min_cells].index
-
-        keep_mask = obs[patient_key].isin(keep_pat).values
-        sub = sub[keep_mask].copy()
-        obs = sub.obs.copy()
-
-        if sub.n_obs == 0:
-            continue
-
-        # ----------------------------------------------
-        # build pseudobulk
-        # ----------------------------------------------
-        rows = []
+        patient_vectors = {}
         meta_rows = []
 
-        for p in obs[patient_key].unique():
+        for p in np.unique(patient):
 
-            pm = (obs[patient_key] == p).values
-            Xp = sub.X[pm]
+            p_mask = (patient == p)
+            cell_idx = idx_ct[p_mask]
 
-            if Xp.shape[0] < min_cells:
+            if len(cell_idx) < min_cells:
                 continue
 
-            if sp.issparse(Xp):
-                vec = np.asarray(Xp.sum(axis=0)).ravel()
-            else:
-                vec = np.asarray(Xp.sum(axis=0)).ravel()
+            vec = np.asarray(X[cell_idx].sum(axis=0)).ravel()
 
-            rows.append(vec)
+            patient_vectors[p] = vec
 
-            row0 = obs.loc[pm].iloc[0]
-            meta_rows.append(
-                {
-                    "sample": p,
-                    "group": row0[groupby],
-                }
-            )
+            meta_rows.append({
+                "sample": p,
+                "condition": condition[p_mask][0],
+                "region": region[p_mask][0],
+            })
 
-        if len(rows) == 0:
+        if len(patient_vectors) < 4:
             continue
 
         meta = pd.DataFrame(meta_rows)
 
-        g1 = (meta["group"] == group1).sum()
-        g2 = (meta["group"] == group2).sum()
-
-        if g1 < min_patients or g2 < min_patients:
+        if (meta["condition"] == group1).sum() < min_patients:
+            continue
+        if (meta["condition"] == group2).sum() < min_patients:
             continue
 
-        counts = np.vstack(rows)
+        counts = np.vstack(list(patient_vectors.values()))
 
-        # ----------------------------------------------
-        # edgeR
-        # ----------------------------------------------
         with tempfile.TemporaryDirectory() as tmp:
 
-            cf = os.path.join(tmp, "counts.csv")
-            mf = os.path.join(tmp, "meta.csv")
-            rf = os.path.join(tmp, "run.R")
-            of = os.path.join(tmp, "out.csv")
+            counts_f = os.path.join(tmp, "counts.csv")
+            meta_f = os.path.join(tmp, "meta.csv")
+            out_prefix = os.path.join(tmp, "out")
+            script_f = os.path.join(tmp, "run.R")
 
             pd.DataFrame(
                 counts.T,
                 index=genes,
-                columns=meta["sample"],
-            ).to_csv(cf)
+                columns=meta["sample"]
+            ).to_csv(counts_f)
 
-            meta.to_csv(mf, index=False)
+            meta.to_csv(meta_f, index=False)
 
-            with open(rf, "w") as f:
-                f.write(R_SCRIPT)
+            script = R_SCRIPT.replace("__META__", meta_f)
+            script = script.replace("__COUNTS__", counts_f)
+            script = script.replace("__OUT__", out_prefix)
 
-            try:
-                subprocess.run(
-                    ["Rscript", rf, cf, mf, of, group1, group2],
-                    check=True,
-                )
-            except Exception:
-                continue
+            with open(script_f, "w") as f:
+                f.write(script)
 
-            if not os.path.exists(of):
-                continue
-
-            res = pd.read_csv(of)
-
-        # ----------------------------------------------
-        # format like old code
-        # ----------------------------------------------
-        res = res.rename(columns={"PValue": "pval", "FDR": "fdr"})
-
-        res["n_patients_group1"] = int(g1)
-        res["n_patients_group2"] = int(g2)
-
-        if isinstance(keys, tuple):
-            for col, val in zip(split_by, keys):
-                res[col] = val
-            name = "_".join(map(str, keys))
-        else:
-            res[split_by[0]] = keys
-            name = str(keys)
-
-        if "fdr" in res.columns and "logFC" in res.columns:
-            res = res.sort_values(
-                ["fdr", "logFC"],
-                ascending=[True, False],
+            res = subprocess.run(
+                ["Rscript", script_f],
+                capture_output=True,
+                text=True
             )
 
-        res.to_csv(
-            os.path.join(output_dir, f"{name}_DE.csv"),
-            index=False,
-        )
+            print(res.stdout)
+            print(res.stderr)
+
+            if res.returncode != 0:
+                raise RuntimeError(f"R failed for {ct}")
+
+            for f in os.listdir(tmp):
+                if f.endswith(".csv"):
+                    df = pd.read_csv(os.path.join(tmp, f))
+                    df.to_csv(ct_dir / f, index=False)
+# ======================================================
+# SUMMARY FUNCTION
+# ======================================================
+from pathlib import Path
+import pandas as pd
+
+
+def summarize_edger_results(
+    de_dir,
+    output_csv,
+    celltype_key="celltype_pred"
+):
+
+    de_dir = Path(de_dir)
+
+    files = list(de_dir.rglob("out_*.csv"))
+
+    print("FILES FOUND:", files)
+
+    all_dfs = []
+
+    for f in files:
+
+        if "meta" in f.name or "counts" in f.name:
+            continue
+
+        df = pd.read_csv(f)
+
+        if "gene" not in df.columns:
+            continue
+
+        celltype = f.parent.name
+        contrast = f.stem.replace("out_", "")
+
+        df.columns = [c.lower() for c in df.columns]
+
+        if "fdr" not in df.columns:
+            if "padj" in df.columns:
+                df["fdr"] = df["padj"]
+            else:
+                df["fdr"] = 1.0
+
+        # ==============================
+        # ADD t-statistic (IF PRESENT)
+        # ==============================
+        if "t_stat" not in df.columns:
+            if "rank_score" in df.columns:
+                df["t_stat"] = df["rank_score"]
+            else:
+                df["t_stat"] = df["logfc"]
+
+        sub = df[["gene", "logfc", "fdr", "t_stat"]].copy()
+        sub[celltype_key] = celltype
+        sub["contrast"] = contrast
+
+        all_dfs.append(sub)
+
+    if len(all_dfs) == 0:
+        raise RuntimeError("No valid results found")
+
+    merged = pd.concat(all_dfs, axis=0, ignore_index=True)
+
+    merged.to_csv(output_csv, index=False)
+
+    return merged

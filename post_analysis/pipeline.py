@@ -1,19 +1,25 @@
-from pathlib import Path
+
 
 from .config import DEFAULT_ANALYSIS_ROOT, FILES
 from .utils import ensure_dir, reset_folder
 from .latent import compute_scvi_latent
 from .clustering import compute_leiden, subsample_umap
-from .annotation import annotate_cells, filter_high_confidence, train_classifier, predict_all_cells
-from .de_analysis import run_pseudobulk_de
+from .de_analysis import run_pseudobulk_de, summarize_edger_results
 from .gsea import run_gsea
 from .io import load_adata
+from .annotation.annotation_cluster import build_pseudobulk_matrix, run_cluster_vs_rest_de_fast, annotate_clusters_from_de
+from .annotation.annotation_cell import annotate_cells_cluster_aware
+from .annotation.metrics import (compute_knn_purity, compute_silhouette_per_cluster, compute_cluster_entropy,
+                                 compute_patient_mixing, compute_dotplot_scores, plot_dotplot_from_scores, compute_auc_separation)
 
+from pathlib import Path
 import scanpy as sc
 import pandas as pd
 from scipy.stats import mannwhitneyu
 import numpy as np
+import os
 import gc
+
 
 class PostAnalysisPipeline:
     def __init__(self, h5ad_path, model_path):
@@ -44,7 +50,7 @@ class PostAnalysisPipeline:
     def run_umap(
             self,
             output_path,
-            adata_path=None,
+            adata_path="latent",
             group_key="condition",
             groups=None,
             n_cells=100000,
@@ -75,8 +81,10 @@ class PostAnalysisPipeline:
 
         if adata_path is None:
             adata_path = self.paths("latent")
+        else:
+            adata_path = self.paths(adata_path)
 
-        return subsample_umap(
+        subsample_umap(
             latent_path=adata_path,
             output_png=output_path,
             group_key=group_key,
@@ -86,259 +94,185 @@ class PostAnalysisPipeline:
             basis=basis,
         )
 
-    def run_annotation(self, marker_dict):
-        print("run annotation...")
-        print("annotate cells...")
-        annotate_cells(
-            self.paths('leiden'),
-            self.paths('annotated'),
+    def run_cluster_annotation(self, marker_dict, cluster_key="leiden"):
+        """
+        Full cluster annotation pipeline:
+        - cluster vs rest DE (RAM-safe)
+        - marker scoring
+        - cluster labeling
+        - save all results in output_dir/annotations
+        """
+
+        print("\n=== Running cluster annotation pipeline ===")
+
+        annot_dir = self.output_dir / "annotations"
+        de_dir = annot_dir / "de_results"
+
+        annot_dir.mkdir(parents=True, exist_ok=True)
+        de_dir.mkdir(parents=True, exist_ok=True)
+
+        # --------------------------------------------------
+        # 0. Load clustered data (IMPORTANT FIX)
+        # --------------------------------------------------
+        adata = load_adata(self.paths("leiden"))
+
+        if cluster_key not in adata.obs.columns:
+            raise ValueError(f"Missing cluster_key: {cluster_key}")
+
+        # --------------------------------------------------
+        # 1. RAM-safe pseudobulk precomputation (CRITICAL FIX)
+        # --------------------------------------------------
+        print("Building pseudobulk matrix...")
+
+
+
+        X_pb, meta_pb, genes = build_pseudobulk_matrix(
+            adata,
+            groupby=(cluster_key, "region"),
+            patient_key="patient_id"
+        )
+
+        # attach cluster column explicitly for DE step
+        meta_pb["cluster"] = meta_pb[cluster_key]
+
+        # --------------------------------------------------
+        # 2. Cluster vs rest DE (NO adata slicing anymore)
+        # --------------------------------------------------
+        print("Running cluster vs rest DE...")
+
+
+        run_cluster_vs_rest_de_fast(
+            X_pb=X_pb,
+           meta=meta_pb,
+            genes=genes,
+            output_dir=str(de_dir),
+            cluster_key="cluster"
+        )
+
+        # --------------------------------------------------
+        # 3. Marker-based annotation
+        # --------------------------------------------------
+        print("Computing marker-based annotation...")
+
+        annotations = annotate_clusters_from_de(
+            de_folder=str(de_dir),
+            marker_dict=marker_dict,
+        )
+
+        # --------------------------------------------------
+        # 4. Save outputs
+        # --------------------------------------------------
+        annotations.to_csv(
+            annot_dir / "final_cluster_labels.csv",
+            index=False
+        )
+
+        cluster_map = dict(zip(
+            annotations["cluster"],
+            annotations["assigned_type"]
+        ))
+
+        pd.Series(cluster_map).to_json(
+            annot_dir / "cluster_to_celltype.json"
+        )
+
+        print(f"Done → {annot_dir}")
+
+        return annotations
+
+    def run_cell_annotation(self, marker_dict):
+        adata = load_adata(self.paths("leiden"))
+        annotate_cells_cluster_aware(adata,
             marker_dict,
-        )
+            cluster_key="leiden",
+            latent_key="X_scVI",
+            output_dir=self.output_dir,
+            neighbors_key="connectivities",
+            n_neighbors=15,
+            max_iter=10,
+            tol=1e-3,
+            weights=(0.5, 0.3, 0.2),  # neigh, marker, centroid
+            )
+
+    def run_metrics(self, marker_dict):
+        path_metric_annotations = Path(self.output_dir) / "annotations" / "metrics"
+        os.makedirs(path_metric_annotations, exist_ok=True)
+
+        adata = load_adata(self.paths("annotated"))
+        mapping = pd.read_csv(self.output_dir / "annotations"/ "final_cluster_labels.csv")
+
+        cluster_to_type = dict(zip(
+            mapping["cluster"].astype(str),
+            mapping["assigned_type"]
+        ))
+
+        adata.obs["assigned_type_from_cluster"] = adata.obs["leiden"].astype(str).map(cluster_to_type)
+
+        print("silhouette...")
+        sil = compute_silhouette_per_cluster(adata)
+        sil.to_csv(f"{path_metric_annotations}/silhouette.csv")
+
+        print("AUC separation...")
+        auc_sep = compute_auc_separation(adata, marker_dict)
+        auc_sep.to_csv(f"{path_metric_annotations}/auc_separation.csv", index=False)
+
+        print("knn purity...")
+        knn = compute_knn_purity(adata)
+        knn.to_csv(f"{path_metric_annotations}/knn_purity.csv")
+
+        print("patient mixing...")
+        mix = compute_patient_mixing(adata)
+        mix.to_csv(f"{path_metric_annotations}/patient_mixing.csv")
+
+        print("dotplot...")
+        dot = compute_dotplot_scores(adata, marker_dict)
+        dot.to_csv(f"{path_metric_annotations}/dotplot.csv", index=False)
+        plot_dotplot_from_scores(dot, f"{path_metric_annotations}/dotplot.png")
+
+        print("entropy...")
+        ent = compute_cluster_entropy(adata)
+        ent.to_csv(f"{path_metric_annotations}/entropy.csv", index=False)
+
+        print("umap...")
+        del adata
         gc.collect()
-        print("filter high confidence...")
-        filter_high_confidence(
-            self.paths('annotated'),
-            self.paths('high_conf'),
-        )
-        gc.collect()
-        print("train classifier...")
-        train_classifier(
-            self.paths('high_conf'),
-            self.output_dir / 'celltype_classifier.pkl',
-        )
-        gc.collect()
-        predict_all_cells(
-            self.paths("latent"),
-            self.output_dir / 'celltype_classifier.pkl',
-            self.output_dir / "adata_final_annotated.h5ad",
-        )
+        self.run_umap(output_path=str(path_metric_annotations / "umap_by_celltype.png"),
+                      adata_path='annotated',
+                      group_key='celltype_pred')
+
+        self.run_umap(output_path=str(path_metric_annotations / "umap_by_condition.png"),
+                      adata_path='annotated',
+                      group_key='condition')
+
+        self.run_umap(output_path=str(path_metric_annotations / "umap_by_region.png"),
+                      adata_path='annotated',
+                      group_key='region')
+        return {
+            "knn": knn,
+            "silhouette": sil,
+            "mixing": mix,
+            "dotplot": dot,
+            "entropy": ent
+        }
 
 
-    def run_de(self, split_by=('cell_type', 'region')):
+    def run_de(self):
         print("run de...")
-        return run_pseudobulk_de(
-            self.paths('latent'),
-            self.output_dir / 'celltype_classifier.pkl',
-            self.output_dir / 'DE_results',
-            split_by=split_by,
+        de_celltype_dir = Path(self.output_dir) / "DE_results"
+        csv_path = os.path.join(self.output_dir,"DE_results",'merged_DE.csv')
+        run_pseudobulk_de(
+            self.paths('annotated'),
+            de_celltype_dir,
         )
+        summarize_edger_results(de_celltype_dir, csv_path)
 
-    def run_gsea(self):
+
+    def run_gsea(self, output_dir='GSEA_results', min_genes=10, fdr_threshold=0.05, nes_threshold=1.5):
         print("run gsea...")
         return run_gsea(
-            self.output_dir / 'DE_results',
-            self.output_dir / 'GSEA_results',
+            os.path.join(self.output_dir / 'DE_results', 'merged_DE.csv'),
+            self.output_dir / output_dir,
+            min_genes=min_genes,
+            fdr_threshold=fdr_threshold,
+            nes_threshold=nes_threshold,
         )
-
-    def run_subcluster_analysis(
-            self,
-            target_cell_type="Inhibitory",
-            resolution=0.5,
-            min_cells_cluster=20,
-            split_by=("subcluster",)
-    ):
-        """
-        Subclustering d'un cell type puis DE pseudobulk par
-        (subcluster x region), GSEA + figures UMAP.
-
-        Tous les résultats sont sauvegardés dans :
-        output/subclusters/<target_cell_type>/
-        """
-
-        print(f"\n=== Subcluster analysis: {target_cell_type} ===")
-
-        # --------------------------------------------------
-        # Paths
-        # --------------------------------------------------
-        root = self.output_dir / "subclusters"
-        cell_dir = root / target_cell_type
-
-        # reset uniquement ce dossier spécifique
-        reset_folder(cell_dir)
-
-        de_dir = cell_dir / "DE"
-        gsea_dir = cell_dir / "GSEA"
-        fig_dir = cell_dir / "figures"
-        temp_h5ad = cell_dir / f"{target_cell_type}_subclusters.h5ad"
-
-        de_dir.mkdir(parents=True, exist_ok=True)
-        gsea_dir.mkdir(parents=True, exist_ok=True)
-        fig_dir.mkdir(parents=True, exist_ok=True)
-
-        # --------------------------------------------------
-        # Load full data
-        # --------------------------------------------------
-        adata = load_adata(self.paths("annotated"))
-
-        if "cell_type" not in adata.obs.columns:
-            raise ValueError("cell_type column missing")
-
-        # --------------------------------------------------
-        # Filter target cell type
-        # --------------------------------------------------
-        ad = adata[adata.obs["cell_type"] == target_cell_type].copy()
-
-        if ad.n_obs == 0:
-            raise ValueError(f"No cells found for {target_cell_type}")
-
-        print(f"{target_cell_type}: {ad.n_obs} cells")
-
-        # --------------------------------------------------
-        # Local clustering
-        # --------------------------------------------------
-        sc.pp.neighbors(ad, use_rep="X_scVI")
-        sc.tl.leiden(ad, resolution=resolution, key_added="subcluster")
-
-        ad.obs["subcluster"] = ad.obs["subcluster"].astype(str)
-
-        # remove tiny clusters
-        vc = ad.obs["subcluster"].value_counts()
-        keep = vc[vc >= min_cells_cluster].index
-        ad = ad[ad.obs["subcluster"].isin(keep)].copy()
-
-        print("Kept clusters:")
-        print(ad.obs["subcluster"].value_counts())
-
-        # --------------------------------------------------
-        # Cluster proportions ALS vs CTRL per patient
-        # --------------------------------------------------
-        print("\nComputing cluster proportions per patient...")
-
-        required = ["patient_id", "condition", "subcluster"]
-        for col in required:
-            if col not in ad.obs.columns:
-                raise ValueError(f"{col} missing in obs")
-
-        tmp = ad.obs[required].copy()
-
-        totals = tmp.groupby("patient_id").size().rename("total_cells")
-
-        counts = (
-            tmp.groupby(["patient_id", "condition", "subcluster"])
-            .size()
-            .rename("n_cells")
-            .reset_index()
-        )
-
-        counts = counts.merge(totals, on="patient_id")
-        counts["proportion"] = counts["n_cells"] / counts["total_cells"]
-
-        counts.to_csv(
-            cell_dir / "cluster_proportions_per_patient.csv",
-            index=False
-        )
-
-        rows = []
-        for cl in counts["subcluster"].unique():
-            sub = counts[counts["subcluster"] == cl]
-
-            als = sub[sub["condition"] == "ALS"]["proportion"].values
-            ctrl = sub[sub["condition"] == "CTRL"]["proportion"].values
-
-            if len(als) >= 2 and len(ctrl) >= 2:
-                stat, p = mannwhitneyu(als, ctrl, alternative="two-sided")
-            else:
-                p = None
-
-            rows.append({
-                "subcluster": cl,
-                "ALS_mean": als.mean() if len(als) else 0,
-                "CTRL_mean": ctrl.mean() if len(ctrl) else 0,
-                "log2FC": np.log2((als.mean() + 1e-9) / (ctrl.mean() + 1e-9)),
-                "pval": p
-            })
-
-        pd.DataFrame(rows).to_csv(
-            cell_dir / "cluster_enrichment_ALS_vs_CTRL.csv",
-            index=False
-        )
-
-        # --------------------------------------------------
-        # Marker genes
-        # --------------------------------------------------
-        print("\nComputing marker genes...")
-
-        ad_mark = ad.copy()
-        sc.pp.normalize_total(ad_mark, target_sum=1e4)
-        sc.pp.log1p(ad_mark)
-
-        sc.tl.rank_genes_groups(
-            ad_mark,
-            groupby="subcluster",
-            method="wilcoxon",
-            pts=True
-        )
-
-        rg = ad_mark.uns["rank_genes_groups"]
-        groups = rg["names"].dtype.names
-
-        rows = []
-        n_top = 20
-
-        for g in groups:
-            genes = rg["names"][g][:n_top]
-            scores = rg["scores"][g][:n_top]
-            pvals = rg["pvals_adj"][g][:n_top] if "pvals_adj" in rg else [None] * len(genes)
-            lfc = rg["logfoldchanges"][g][:n_top] if "logfoldchanges" in rg else [None] * len(genes)
-
-            for gene, score, padj, fc in zip(genes, scores, pvals, lfc):
-                rows.append({
-                    "subcluster": g,
-                    "gene": gene,
-                    "score": score,
-                    "logFC": fc,
-                    "pval_adj": padj
-                })
-
-        pd.DataFrame(rows).to_csv(
-            cell_dir / "top_markers.csv",
-            index=False
-        )
-
-        # --------------------------------------------------
-        # Save temp adata
-        # --------------------------------------------------
-        ad.write(temp_h5ad)
-
-        # --------------------------------------------------
-        # UMAP figures
-        # --------------------------------------------------
-        print("\nSaving UMAP figures...")
-
-        for key in ["condition", "subcluster", "region"]:
-            if key in ad.obs.columns:
-                self.run_umap(
-                    output_path=fig_dir / f"umap_{key}.png",
-                    adata_path=temp_h5ad,
-                    group_key=key,
-                    n_cells=100000,
-                )
-
-        # --------------------------------------------------
-        # Run DE
-        # --------------------------------------------------
-        print("\nRunning pseudobulk DE...")
-
-        run_pseudobulk_de(
-            latent_path=temp_h5ad,
-            classifier_path=self.output_dir / "celltype_classifier.pkl",
-            output_dir=de_dir,
-            split_by=split_by,
-            min_cells=3,
-            min_total_cells=10,
-            min_patients=2,
-            reclassify=False
-        )
-
-        # --------------------------------------------------
-        # Run GSEA
-        # --------------------------------------------------
-        print("\nRunning GSEA...")
-
-        run_gsea(
-            de_dir=de_dir,
-            output_dir=gsea_dir,
-        )
-
-        print("\nDone.")
-        print(cell_dir)
