@@ -1,12 +1,10 @@
-
-import os
-import glob
-import numpy as np
-import pandas as pd
 import scipy.sparse as sp
 import subprocess
 from pathlib import Path
-
+import os
+import numpy as np
+import pandas as pd
+from tempfile import TemporaryDirectory
 
 
 R_SCRIPT = r'''
@@ -61,12 +59,26 @@ write.csv(res, outf, row.names=FALSE)
 
 def build_pseudobulk_matrix(adata, groupby=("cell_type", "region"), patient_key="patient_id"):
     """
-    returns:
-        X_pb: (n_samples, n_genes)
-        meta: dataframe
+    Construit une matrice pseudobulk en agrégeant les comptes d’expression
+    au niveau de groupes définis (ex: celltype, région) et par patient.
+
+    Étapes :
+    - Récupère la matrice d’expression (dense ou sparse)
+    - Définit des groupes basés sur les colonnes spécifiées dans `groupby`
+      ainsi que l’identifiant patient
+    - Pour chaque combinaison (groupe, patient) :
+        - somme les expressions des cellules correspondantes
+    - Construit une matrice pseudobulk (échantillons x gènes)
+      et une table de métadonnées associée
+
+    :param adata: objet AnnData contenant les données (cells x genes)
+    :param groupby: tuple de colonnes dans adata.obs pour définir les groupes
+    :param patient_key: colonne dans adata.obs identifiant les patients
+    :return:
+        - X_pb: matrice pseudobulk (n_groups x n_genes)
+        - meta: DataFrame des métadonnées (groupes + patient)
+        - genes: noms des gènes
     """
-
-
 
     obs = adata.obs
     X = adata.X.tocsr() if sp.issparse(adata.X) else adata.X
@@ -98,11 +110,16 @@ def build_pseudobulk_matrix(adata, groupby=("cell_type", "region"), patient_key=
     return X_pb, meta, genes
 
 def run_cluster_vs_rest_de_fast(X_pb, meta, genes, output_dir, cluster_key="cell_type"):
+    """
+    Lance une analyse différentielle (cluster vs reste) à partir d’une matrice pseudobulk.
 
-    import os
-    import numpy as np
-    import pandas as pd
-    from tempfile import TemporaryDirectory
+    :param X_pb: matrice pseudobulk (samples x genes ou gènes x samples selon usage)
+    :param meta: DataFrame contenant les métadonnées des pseudobulks
+    :param genes: liste des noms de gènes
+    :param output_dir: dossier de sortie pour les résultats
+    :param cluster_key: colonne de meta définissant les clusters
+    :return: aucun retour (sauvegarde des résultats sur disque)
+    """
 
     clusters = meta[cluster_key].unique()
 
@@ -152,6 +169,29 @@ def annotate_clusters_from_de(
     eps=1e-10,
     margin=0.2,
 ):
+    """
+    Annoter des clusters à partir de résultats d’expression différentielle
+    (cluster vs reste), en utilisant des gènes marqueurs.
+
+    Étapes :
+    - Parcourt les fichiers DE dans un dossier (format *_vs_rest.csv)
+    - Pour chaque cluster :
+        - vérifie la présence des colonnes nécessaires
+        - construit un score de gène basé sur logFC et significativité (FDR)
+        - agrège ces scores par type cellulaire via les gènes marqueurs
+    - Détermine le type cellulaire dominant :
+        - basé sur le meilleur score moyen des marqueurs
+        - avec une règle de séparation (margin) pour éviter les assignations ambiguës
+    - Calcule une mesure de confiance basée sur le ratio du meilleur score
+
+    :param de_folder: dossier contenant les résultats DE par cluster
+    :param marker_dict: dict {celltype -> liste de gènes marqueurs}
+    :param fdr_col: nom de la colonne FDR dans les fichiers DE
+    :param logfc_col: nom de la colonne log fold-change
+    :param eps: petite constante pour éviter les divisions/log de zéro
+    :param margin: seuil de différence entre meilleur et second score pour éviter les ambiguïtés
+    :return: DataFrame avec annotation des clusters
+    """
 
     de_folder = Path(de_folder)
 
@@ -164,10 +204,6 @@ def annotate_clusters_from_de(
 
     for f in files:
         df = pd.read_csv(f)
-
-        # ----------------------------
-        # column check (robust)
-        # ----------------------------
         required = {"gene", logfc_col, fdr_col}
         if not required.issubset(df.columns):
             print(f"[SKIP] {f.name} missing {required - set(df.columns)}")
@@ -177,15 +213,9 @@ def annotate_clusters_from_de(
 
         df[fdr_col] = df[fdr_col].replace(0, eps)
 
-        # ----------------------------
-        # gene scoring
-        # ----------------------------
         df["score"] = df[logfc_col] * (-np.log10(df[fdr_col] + eps))
         gene_score = dict(zip(df["gene"], df["score"]))
 
-        # ----------------------------
-        # marker scoring per type
-        # ----------------------------
         type_scores = {}
         marker_coverage = {}
 
@@ -206,9 +236,6 @@ def annotate_clusters_from_de(
 
         score_diff = best_score - second_score
 
-        # ----------------------------
-        # improved labeling logic
-        # ----------------------------
         if best_score < 1e-6:
             label = "NoSignal"
         elif score_diff < margin:
@@ -240,8 +267,6 @@ def annotate_clusters_from_de(
             "Check that CSVs contain gene/logFC/FDR columns."
         )
 
-    # optional: sort by confidence
     res_df = res_df.sort_values("confidence", ascending=False)
-
 
     return res_df

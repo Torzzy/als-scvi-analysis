@@ -1,15 +1,25 @@
-import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
-
 from sklearn.metrics import silhouette_samples
 from sklearn.neighbors import NearestNeighbors
+import numpy as np
+import pandas as pd
+from scipy import sparse
 
 def compute_knn_purity(
     adata,
     label_col="celltype_pred",
     n_neighbors=15,
 ):
+    """
+    Mesure la cohérence locale des labels via les k plus proches voisins dans l’espace latent.
+
+    La pureté est définie comme la proportion de voisins partageant le même label que la cellule centrale.
+
+    :param adata: objet AnnData contenant la représentation latente X_scVI
+    :param label_col: colonne des labels à évaluer
+    :param n_neighbors: nombre de voisins
+    :return: moyenne de la pureté par cluster (leiden)
+    """
     X = adata.obsm["X_scVI"]
 
     nn = NearestNeighbors(n_neighbors=n_neighbors).fit(X)
@@ -35,7 +45,17 @@ def compute_silhouette_per_cluster(
     cluster_col="leiden"
 ):
     """
-    Computes silhouette score correctly and safely.
+    Calcule le score de silhouette moyen par cluster à partir d’une représentation latente.
+
+    La silhouette est calculée sur un sous-échantillonnage des cellules si nécessaire, puis agrégée
+    au niveau des clusters pour estimer la cohésion intra-cluster dans l’espace latent.
+
+    :param adata: objet AnnData contenant les embeddings
+    :param label_col: colonne utilisée comme label pour le calcul de silhouette
+    :param obsm_key: clé de la représentation dans adata.obsm
+    :param sample_max: nombre maximum de cellules utilisées pour le calcul
+    :param cluster_col: colonne définissant les clusters pour l’agrégation finale
+    :return: DataFrame avec le score de silhouette moyen par cluster
     """
 
     X = adata.obsm[obsm_key]
@@ -44,9 +64,7 @@ def compute_silhouette_per_cluster(
 
     n = adata.n_obs
 
-    # --------------------------------------------------
-    # subsampling (SAFE)
-    # --------------------------------------------------
+    # subsampling
     if n > sample_max:
         idx = np.random.choice(n, sample_max, replace=False)
         X_sub = X[idx]
@@ -57,9 +75,7 @@ def compute_silhouette_per_cluster(
         labels_sub = labels
         clusters_sub = clusters
 
-    # --------------------------------------------------
     # silhouette
-    # --------------------------------------------------
     sil = silhouette_samples(X_sub, labels_sub)
 
     df = pd.DataFrame({
@@ -70,9 +86,7 @@ def compute_silhouette_per_cluster(
     return df.groupby("cluster")["silhouette"].mean().reset_index()
 
 
-import numpy as np
-import pandas as pd
-from scipy import sparse
+
 
 def compute_auc_separation(
     adata,
@@ -81,23 +95,24 @@ def compute_auc_separation(
     top_n=1000
 ):
     """
-    True AUCell-like computation (rank-based).
+    Calcule une mesure de séparation entre types cellulaires basée sur une approximation de l’AUCell.
 
-    Steps:
-    - rank genes per cell
-    - compute enrichment of marker genes in top-ranked genes
-    - aggregate per cluster
+    Pour chaque cluster, les gènes sont classés par expression par cellule, puis la fraction de gènes marqueurs
+    présents dans les top_n gènes est calculée pour chaque type cellulaire. La séparation correspond à la différence
+    entre le meilleur score et le second meilleur score.
+
+    :param adata: objet AnnData contenant la matrice d’expression
+    :param marker_dict: dictionnaire {cell_type -> gènes marqueurs}
+    :param cluster_col: colonne définissant les clusters dans adata.obs
+    :param top_n: nombre de gènes considérés dans le ranking par cellule
+    :return: DataFrame avec les scores de séparation AUCell par cluster
     """
 
     clusters = np.array(adata.obs[cluster_col].values)
     gene_index = {g: i for i, g in enumerate(adata.var_names)}
     X = adata.X
-
     results = []
-
-    # ======================================================
-    # iterate clusters (RAM-safe)
-    # ======================================================
+    # iterate clusters
     for cl in np.unique(clusters):
 
         idx = np.where(clusters == cl)[0]
@@ -112,19 +127,14 @@ def compute_auc_separation(
         n_cells = Xc.shape[0]
         n_genes = Xc.shape[1]
 
-        # ======================================================
         # rank genes per cell
-        # ======================================================
-        ranked = np.argsort(-Xc, axis=1)  # descending
+        ranked = np.argsort(-Xc, axis=1)
 
-        # restrict to top genes for speed
         ranked = ranked[:, :top_n]
 
         type_scores = []
 
-        # ======================================================
         # AUCell per cell type
-        # ======================================================
         for cell_type, markers in marker_dict.items():
 
             marker_idx = [gene_index[g] for g in markers if g in gene_index]
@@ -135,9 +145,7 @@ def compute_auc_separation(
 
             marker_set = set(marker_idx)
 
-            # --------------------------------------------------
             # AUCell: fraction of marker genes in top ranks
-            # --------------------------------------------------
             auc_values = []
 
             for i in range(n_cells):
@@ -200,14 +208,24 @@ def compute_patient_mixing(
     patient_col="patient_id",
     n_neighbors=15
 ):
+    """
+    Calcule un score de mixing des patients basé sur les k plus proches voisins dans l’espace latent.
+
+    Pour chaque cellule, la proportion de patients différents présents dans son voisinage est calculée,
+    puis agrégée au niveau des clusters.
+
+    :param adata: objet AnnData contenant la représentation latente X_scVI
+    :param cluster_col: colonne définissant les clusters
+    :param patient_col: colonne identifiant les patients
+    :param n_neighbors: nombre de voisins considérés
+    :return: moyenne du score de mixing par cluster
+    """
     X = adata.obsm["X_scVI"]
 
     nn = NearestNeighbors(n_neighbors=n_neighbors).fit(X)
     idx = nn.kneighbors(return_distance=False)
 
     patients = adata.obs[patient_col].values
-    clusters = adata.obs[cluster_col].values
-
     mixing = []
 
     for i in range(adata.n_obs):
@@ -228,13 +246,19 @@ def compute_dotplot_scores(
     cluster_col="leiden"
 ):
     """
-    RAM-safe dotplot:
-    - no .toarray()
-    - no per-cell loops
+    Calcule des scores type dotplot pour un ensemble de marqueurs par celltype et cluster.
+
+    Pour chaque type cellulaire, l’expression moyenne des gènes marqueurs est calculée par cellule,
+    puis agrégée au niveau des clusters afin d’obtenir un score d’enrichissement.
+
+    :param adata: objet AnnData contenant la matrice d’expression
+    :param marker_dict: dictionnaire {cell_type -> gènes marqueurs}
+    :param cluster_col: colonne définissant les clusters dans adata.obs
+    :return: DataFrame avec scores d’expression moyens par cluster et celltype
     """
 
     clusters = adata.obs[cluster_col].values
-    X = adata.X  # keep sparse if possible
+    X = adata.X
 
     gene_index = {g: i for i, g in enumerate(adata.var_names)}
 
@@ -246,10 +270,10 @@ def compute_dotplot_scores(
         if len(idx) == 0:
             continue
 
-        # extract only marker columns
+
         Xm = X[:, idx]
 
-        if hasattr(Xm, "toarray"):  # sparse safe conversion ONLY on subset
+        if hasattr(Xm, "toarray"):
             Xm = Xm.toarray()
 
         marker_score = Xm.mean(axis=1)
@@ -280,25 +304,25 @@ def plot_dotplot_from_scores(
     score_col="score"
 ):
     """
-    Create dotplot PNG from compute_dotplot_scores output.
+    Génère et sauvegarde un dotplot à partir d’un tableau de scores d’expression.
 
-    Rows = clusters
-    Columns = celltypes
-    Values = mean marker score
+    Les scores sont pivotés en matrice (clusters × celltypes), puis visualisés sous forme de heatmap
+    pour représenter les enrichissements relatifs des marqueurs par cluster.
+
+    :param dot_df: DataFrame contenant les scores par cluster et celltype
+    :param output_path: chemin de sauvegarde de la figure
+    :param cluster_col: colonne des clusters
+    :param celltype_col: colonne des celltypes
+    :param score_col: colonne des scores
+    :return: matrice pivotée utilisée pour le plot
     """
 
-    # ----------------------------
-    # pivot table
-    # ----------------------------
     mat = dot_df.pivot(
         index=cluster_col,
         columns=celltype_col,
         values=score_col
     ).fillna(0)
 
-    # ----------------------------
-    # plot
-    # ----------------------------
     plt.figure(figsize=(12, 6))
 
     im = plt.imshow(mat.values, aspect="auto")

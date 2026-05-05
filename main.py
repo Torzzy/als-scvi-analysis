@@ -33,4 +33,5 @@ if __name__ == '__main__':
         #pipe.run_cell_annotation(MARKERS)
         #pipe.run_metrics(MARKERS)
         #pipe.run_de()
-        pipe.run_gsea(output_dir='GSEA_relaxed_results', min_genes=5, fdr_threshold=.1, nes_threshold=1.2)
+        #pipe.run_gsea(output_dir='GSEA_relaxed_results', min_genes=5, fdr_threshold=.1, nes_threshold=1.2)
+        pipe.run_pathway_validation()

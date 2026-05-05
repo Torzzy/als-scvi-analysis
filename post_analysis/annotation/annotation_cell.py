@@ -18,13 +18,35 @@ def annotate_cells_cluster_aware(
     weights=(0.5, 0.3, 0.2),  # neigh, marker, centroid
 ):
     """
-    Cluster-aware RAM-safe iterative annotation.
+    Annote les cellules en combinant trois sources d’information :
+    - similarité locale (voisinage)
+    - expression de gènes marqueurs
+    - proximité à des centroïdes dans l’espace latent, au sein des clusters
 
-    Auto-builds neighbors if missing.
+    Étapes :
+    - Construit un graphe de voisins si nécessaire
+    - Calcule un score de marqueurs pour chaque cellule et chaque type
+    - Initialise les scores avec ces marqueurs
+    - Itère :
+        - propagation des scores via le graphe de voisins
+        - calcul de centroïdes par (cluster, type)
+        - calcul d’un score basé sur la distance aux centroïdes
+        - combinaison pondérée des trois sources
+        - normalisation et test de convergence
+    - Assigne à chaque cellule le type avec le score maximal
+    - Calcule une confiance basée sur l’écart entre le meilleur et le second score
 
-    Outputs:
-        adata.obs["celltype_pred"]
-        adata.obs["celltype_confidence"]
+    :param adata: objet AnnData contenant les données (expression, embeddings, clusters)
+    :param marker_dict: dict {celltype -> liste de gènes marqueurs}
+    :param output_dir: dossier de sortie pour sauvegarder l’objet annoté
+    :param cluster_key: clé des clusters dans adata.obs
+    :param latent_key: clé de la représentation latente dans adata.obsm
+    :param neighbors_key: clé du graphe de connectivité dans adata.obsp
+    :param n_neighbors: nombre de voisins pour construire le graphe si absent
+    :param max_iter: nombre maximal d’itérations
+    :param tol: seuil de convergence (variation moyenne des scores)
+    :param weights: poids (voisinage, marqueurs, centroïdes)
+    :return: adata annoté avec "celltype_pred" et "celltype_confidence"
     """
 
     w_neigh, w_mark, w_cent = weights
@@ -33,9 +55,7 @@ def annotate_cells_cluster_aware(
     cell_types = list(marker_dict.keys())
     n_types = len(cell_types)
 
-    # ======================================================
-    # 0. BUILD NEIGHBORS IF MISSING
-    # ======================================================
+    # BUILD NEIGHBORS IF MISSING
     if neighbors_key not in adata.obsp:
         print("Building neighbors graph...")
         sc.pp.neighbors(
@@ -47,15 +67,11 @@ def annotate_cells_cluster_aware(
 
     conn = adata.obsp["connectivities"]
 
-    # ======================================================
-    # 1. INPUTS
-    # ======================================================
+    # INPUTS
     latent = adata.obsm[latent_key]
     clusters = adata.obs[cluster_key].values
 
-    # ======================================================
-    # 3. MARKER SCORES (RAM SAFE)
-    # ======================================================
+    # MARKER SCORES
     print("Computing marker scores...")
 
     gene_to_idx = {g: i for i, g in enumerate(adata.var_names)}
@@ -79,31 +95,23 @@ def annotate_cells_cluster_aware(
 
     marker_scores /= (marker_scores.max(axis=1, keepdims=True) + 1e-9)
 
-    # ======================================================
-    # 4. INIT SCORES
-    # ======================================================
+    # INIT SCORES
     scores = marker_scores.copy()
 
     unique_clusters = np.unique(clusters)
 
-    # ======================================================
-    # 5. ITERATIVE REFINEMENT
-    # ======================================================
+    # ITERATIVE REFINEMENt
     for it in range(max_iter):
 
         print(f"Iteration {it+1}")
 
-        # -------------------------
         # neighbor propagation
-        # -------------------------
         neigh_scores = conn.dot(scores)
 
         row_sum = np.asarray(conn.sum(axis=1)).ravel()[:, None] + 1e-9
         neigh_scores /= row_sum
 
-        # -------------------------
         # centroid per (cluster, type)
-        # -------------------------
         best_idx = np.argmax(scores, axis=1)
 
         centroids = {}
@@ -137,9 +145,6 @@ def annotate_cells_cluster_aware(
 
         centroid_scores /= (centroid_scores.max(axis=1, keepdims=True) + 1e-9)
 
-        # -------------------------
-        # combine
-        # -------------------------
         new_scores = (
             w_neigh * neigh_scores +
             w_mark * marker_scores +
@@ -148,9 +153,7 @@ def annotate_cells_cluster_aware(
 
         new_scores /= (new_scores.max(axis=1, keepdims=True) + 1e-9)
 
-        # -------------------------
         # convergence
-        # -------------------------
         delta = np.abs(new_scores - scores).mean()
         print(f"delta = {delta:.6f}")
 
@@ -160,9 +163,7 @@ def annotate_cells_cluster_aware(
             print("Converged")
             break
 
-    # ======================================================
-    # 6. FINAL ASSIGNMENT
-    # ======================================================
+    # FINAL ASSIGNMENT
     best_idx = np.argmax(scores, axis=1)
     best_scores = scores[np.arange(n_cells), best_idx]
 
@@ -173,15 +174,12 @@ def annotate_cells_cluster_aware(
 
     pred_labels = np.array(cell_types)[best_idx]
 
-    # ======================================================
-    # 7. STORE
-    # ======================================================
+
+    # STORE
     adata.obs["celltype_pred"] = pred_labels
     adata.obs["celltype_confidence"] = confidence
 
-    # ======================================================
-    # 8. SAVE
-    # ======================================================
+    # SAVE
     save_path = Path(output_dir) / FILES["annotated"]
     save_adata(adata,save_path)
 

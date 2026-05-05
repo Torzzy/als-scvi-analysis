@@ -2,6 +2,7 @@ root_data/
 runs/
 analysis/
 tests/
+papers/
 datasets.txt
 __pycache__/
 .venv/

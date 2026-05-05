@@ -11,6 +11,7 @@ from .annotation.annotation_cluster import build_pseudobulk_matrix, run_cluster_
 from .annotation.annotation_cell import annotate_cells_cluster_aware
 from .annotation.metrics import (compute_knn_purity, compute_silhouette_per_cluster, compute_cluster_entropy,
                                  compute_patient_mixing, compute_dotplot_scores, plot_dotplot_from_scores, compute_auc_separation)
+from .pathway_validation import score_celltype_vs_reference, ALS_REFERENCE, permutation_test_celltypes, build_gene_strata_with_features
 
 from pathlib import Path
 import scanpy as sc
@@ -276,3 +277,107 @@ class PostAnalysisPipeline:
             fdr_threshold=fdr_threshold,
             nes_threshold=nes_threshold,
         )
+
+    def run_pathway_validation(self, contrast_filter='global_condition',
+                               scoring_function=score_celltype_vs_reference,
+                               n_iter=1000,
+                               random_state=42
+                               ):
+        print("run pathway validation...")
+        # PATHS
+        csv_path = os.path.join(self.output_dir, "GSEA_results", "TOP_PATHWAYS.csv")
+        als_reference = ALS_REFERENCE
+        adata = load_adata(self.paths('annotated'))
+        output_csv = Path(self.output_dir) / "pathway_validation.csv"
+
+        strata, gene_df = build_gene_strata_with_features(adata, 7)
+
+        # Load CSV input
+
+        df = pd.read_csv(csv_path)
+        df = df[df["contrast"] == contrast_filter]
+
+        celltype_to_pathways = {}
+        celltype_to_genes = {}
+
+
+        for _, row in df.iterrows():
+
+            ct = row["celltype"]
+            pw = row["Term"]
+
+            genes = str(row["Lead_genes"]).split(";")
+            genes = [g.strip() for g in genes if g.strip()]
+
+            if ct not in celltype_to_pathways:
+                celltype_to_pathways[ct] = {}
+
+            celltype_to_pathways[ct][pw] = genes
+
+        # flatten genes per celltype
+        for ct, pw_dict in celltype_to_pathways.items():
+            all_genes = []
+            for gset in pw_dict.values():
+                all_genes.extend(gset)
+            celltype_to_genes[ct] = list(set(all_genes))
+
+
+        # OBSERVED SCORES
+        observed_scores = {}
+
+        for ct, lead_dict in celltype_to_pathways.items():
+            score = scoring_function(lead_dict, als_reference)
+
+            observed_scores[ct] = {
+                "score": score,
+                "k": len(celltype_to_genes[ct])
+            }
+
+        # NULL DISTRIBUTION
+
+        null_results = permutation_test_celltypes(
+            celltype_df=pd.DataFrame({
+                "celltype": list(celltype_to_genes.keys()),
+                "Lead_genes": list(celltype_to_genes.values())
+            }),
+            als_reference=als_reference,
+            scoring_function=scoring_function,
+            strata=strata,
+            gene_df=gene_df,
+            n_iter=n_iter,
+            random_state=random_state
+        )
+
+        # BUILD FINAL TABLE
+        rows = []
+
+        for ct in celltype_to_genes.keys():
+            print(null_results.keys())
+            print(null_results[list(null_results.keys())[0]])
+            obs = observed_scores[ct]["score"]
+            null_scores = np.array(null_results[ct]["scores"])
+
+            null_mean = null_scores.mean()
+            null_std = null_scores.std(ddof=1)
+
+            zscore = 0.0
+            if null_std > 0:
+                zscore = (obs - null_mean) / null_std
+
+            p_emp = (np.sum(null_scores >= obs) + 1) / (len(null_scores) + 1)
+            rows.append({
+                "celltype": ct,
+                "observed_score": obs,
+                "null_mean": null_mean,
+                "null_std": null_std,
+                "zscore": zscore,
+                "p_empirical": p_emp,
+                "n_genes": observed_scores[ct]["k"]
+            })
+
+        result_df = pd.DataFrame(rows)
+
+        # SAVE
+        result_df.to_csv(output_csv, index=False)
+
+        return result_df

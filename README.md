@@ -279,6 +279,10 @@ On regarde différentes métriques par cluster :
 Ces métriques semblent indiquer que, malgré le fait que certains clusters soient probablement des artefacts, de l'information biologique est présente dans cet espace.  
 Les cellules sont regroupées par type et mélangées entre patients. Les clusters semblent plutôt former un continuum au vu des scores de silhouette. Les annotations paraissent relativement robustes au regard des valeurs d’AUC separation.
 
+#### Limites de la méthode
+
+Cette méthode n'est pas la plus robuste et il faudrait utiliser un atlas de cellules déjà annotées et le projeter dans l'espace latent. On propage ensuite cette annotation dans l'espace latent pour annoter le reste des cellules.
+N'ayant pas d'atlas, c'est la méthode proposée qui a été choisie.
 ### Pseudobulk DE par cellules 
 
 Il faut faire très attention lorsque l’on manipule les counts bruts des cellules. Dès que l’on souhaite les comparer, il faut garder à l’esprit que le batch effect est présent. 
@@ -309,7 +313,7 @@ L’idée est de définir un modèle avec des coefficients &beta; qui expliquent
 
 log(&mu;<sub>i</sub>) = X<sub>i</sub> &beta; avec &mu;<sub>i</sub> la valeur moyenne du gène pour l’échantillon i et X<sub>i</sub> la ligne de la design matrix correspondante.
 
-#### Exemple :
+#### Exemple
 
 Prenons des données exemples pour illustrer ce qu’il se passe avec deux conditions et 3 régions :
 
@@ -384,7 +388,7 @@ On estime également la variance de la loi NB, qui va servir à calculer l’inc
 Cette incertitude permet de tester statistiquement chaque beta contre l’hypothèse nulle. On en déduit la p-value puis le FDR grâce à ce test.  
 Les valeurs des betas correspondent directement aux logFC définis par le design.
 
-#### Limites du DE :
+#### Limites du DE
 
 Comme expliqué dans la section relative à scVI, une limite importante de la modélisation dans cette étude avec edgeR est que l’on ne sépare toujours pas complètement l’effet biologique lié aux différences entre régions de l’effet technique lié au batch effect.
 Les résultats doivent donc être interprétés avec prudence.
@@ -456,8 +460,116 @@ Les voies de signalisation vasculaire et métabolique sont très représentées,
 Un ensemble important de signatures synaptiques et neuronales (NMDA, glutamate, synapses, plasticité) apparaît en région MCX, suggérant une forte interaction neuro-vasculaire.
 On retrouve également des modules de stress cellulaire, hypoxie et ROS, ainsi que des programmes de réponse inflammatoire et immunitaire (IFN-γ, inflammation, apoptose), répartis entre FX, MCX et SC.
 Globalement, le profil indique un état de péricyte très actif, couplant métabolisme énergétique, réponse au stress et communication avec le système neuronal et vasculaire.
+### Validation sur la littérature existante
 
-## Get Started
+Cette section vise à présenter la méthode utilisée pour comparer les résultats GSEA obtenus avec des pathways connus de la littérature scientifique. Pour cette section, un LLM a été utilisé pour définir les pathways connus,
+principalement basé sur 'Molecular and Cellular Mechanisms Affected in ALS' (https://www.mdpi.com/2075-4426/10/3/101), un article qui recense la plupart des pathways et gènes impliqués dans la maladie. On ne teste dans cette section que les effets globaux par type cellulaire.
+
+L'évaluation des résultats se fait de la manière suivante :
+
+- calcul d'un score de comparaison entre deux listes de pathways (deux listes de listes de gènes).
+- utilisation de ce score pour calculer pour chaque type cellulaire un score de comparaison avec nos pathways de référence.
+- génération stratifiée de listes de gènes aléatoires de même taille que les pathways obtenus avec GSEA pour calculer un score de comparaison avec nos pathways de référence (réalisé 1000 fois).
+- calcul de la p-value empirique et autres métriques.
+
+#### score de comparaison / calcul d'un score pour un type cellulaire :
+
+Étant donné deux listes de listes de gènes, on calcule le Jaccard entre chaque couple de listes. La première liste de listes de gènes correspond à une liste de pathways. Le score d'un pathway devient le meilleur score obtenu avec les pathways de référence.
+On réalise ce calcul pour chacun des pathways d'un type cellulaire et on moyenne pour obtenir le score d'un type cellulaire.
+
+#### génération de pathways aléatoires et calcul de la p-value empirique :
+
+On veut regarder à quel point ce score est significativement élevé par rapport à des gènes aléatoires dans nos données.
+Pour cela, on fait des tirages aléatoires de gènes (même nombre de pathways et même nombre de gènes par pathway) dans l'ensemble des 3000 gènes et on regarde si le score est plus élevé que le score obtenu sur nos données.
+Plus précisément, on trie au préalable les gènes en strates. Chaque strate correspond à la rareté des gènes dans nos données. Un gène très peu exprimé dans l'ensemble des cellules ne sera pas dans la même strate qu'un gène très abondant.
+On définit 7 strates pour ce calcul. L'idée est de remplacer un gène aléatoirement par un gène de la même strate pour garder une cohérence biologique et ne pas supprimer des gènes "hubs" par exemple présents dans beaucoup de pathways.
+On réalise ces tirages 1000 fois par type cellulaire et on compte le nombre de fois où le tirage a un meilleur score que celui calculé sur notre GSEA. On divise ce nombre par le nombre de tirages effectués et on obtient la p-value empirique.
+On normalise ce score en fournissant un z-score qui permet de visualiser combien d'écarts-types au-dessus du hasard les résultats se situent.
+
+#### Application à l'étude :
+
+Voici les pathways de la littérature retenus :
+
+- Oxidative Phosphorylation:
+  ATP5F1A, ATP5F1B, ATP5MC3, CYCS, UQCRB, UQCRH,
+  NDUFA4, NDUFA5, NDUFS1, COX4I1, COX7A2L,
+  VDAC1, SLC25A3, SLC25A4, MDH1, LDHB, ISCU
+
+- TCA Cycle:
+  MDH1, IDH3A, SUCLA2, PDHA1, PDHB, CS, ACO2, DLST
+
+- Respiratory Electron Transport:
+  ATP5F1A, ATP5F1B, CYCS, UQCRB, UQCRH, COX4I1,
+  NDUFA4, NDUFS1, COX7A2L, ATP5MC3
+
+- Heat Shock Response:
+  HSPA1A, HSPA8, HSPA5, HSP90AA1, HSP90AB1,
+  HSPH1, HSPB1, DNAJB1, PTGES3, HSPA4L
+
+- Unfolded Protein Response:
+  HSPA5, ERN1, EIF2AK3, ATF6, DDIT3,
+  XBP1, DNAJB9, HERPUD1, CANX
+
+- RNA processing:
+  HNRNPA1, HNRNPA2B1, HNRNPU, SRSF1, SRSF3,
+  DDX3X, DDX5, TARDBP, FUS, RBM14, TIA1
+
+- mRNA splicing:
+  SRSF1, SRSF3, SF3B1, U2AF2, HNRNPA1,
+  HNRNPU, PRPF8, DDX5, RBM25
+
+- MYC targets:
+  EIF4G2, EIF1AX, RAN, XPO1, PGK1, GAPDH,
+  RPLP0, RPS3, HNRNPA3, NPM1, MYC
+
+- Glutamate signaling:
+  SLC17A7, SLC17A6, GRIN1, GRIA1, GRIN2B,
+  SLC1A2, SLC1A3, GLS, GLUL
+
+- Synaptic transmission:
+  SNAP25, SYT1, CAMK2A, GABRA1, GAD1, GAD2,
+  DLG4, SLC17A7, SLC17A6, GRIN1
+
+- NF-kB signaling:
+  NFKB1, RELA, NFKBIA, TNF, IL1B, IL6,
+  CXCL10, STAT1, TRAF6, IKBKB
+
+- Interferon response:
+  STAT1, STAT2, IRF1, IRF7, IFIT1, IFIT3,
+  ISG15, OAS1, MX1, CXCL10
+
+- Antigen presentation:
+  HLA-DRA, HLA-DRB1, HLA-DPA1, B2M,
+  TAP1, TAP2, CD74, CIITA
+
+- Axonal transport:
+  KIF5A, KIF1A, DYNC1H1, DYNLL1, NEFL,
+  MAPT, RAB7A, RAB10, RAB14, TUBA1A
+
+- Vesicle trafficking:
+  RAB5A, RAB7A, RAB10, RAB14, CLTC,
+  AP2M1, DNM1, SNAP25, STX1A
+
+- Autophagy:
+  MAP1LC3B, SQSTM1, ATG5, ATG7, BECN1,
+  ULK1, VPS34, GABARAP, OPTN
+
+- Proteasome:
+  PSMA1, PSMA3, PSMB1, PSMB5, PSMC1,
+  PSMD1, UBC, UBB, VCP, CAND1
+
+Maintenant les résultats par type cellulaire :
+
+| Celltype        | Observed score | Null mean        | Null std         | Z-score        | P-value (empirical) | N genes |
+|----------------|---------------|------------------|------------------|----------------|----------------------|---------|
+| Inhibitory      | 0.1276088617  | 0.0132262707     | 0.0075975351     | 15.0552238005  | 0.000999000999       | 66      |
+| Pericyte        | 0.0098039216  | 0.0142770747     | 0.0128665725     | -0.3476569324  | 0.5854145854         | 35      |
+| Endothelial     | 0.0369230769  | 0.0123084996     | 0.0084110010     | 2.9264742008   | 0.007992007992       | 62      |
+| Neuron          | 0.1799999858  | 0.0111935882     | 0.0054035554     | 31.2398755246  | 0.000999000999       | 130     |
+| Oligodendrocyte | 0.1108630952  | 0.0132356587     | 0.0078101026     | 12.5001477007  | 0.000999000999       | 73      |
+| Astrocyte       | 0.2563003663  | 0.0146984123     | 0.0096758222     | 24.9696561750  | 0.000999000999       | 54      |
+
+Les résultats montrent un enrichissement fortement significatif des pathways associés aux signatures ALS dans plusieurs celltypes, en particulier les neurones et les astrocytes, avec des z-scores élevés et des p-values empiriques très faibles, tandis que les pericytes ne présentent pas d'enrichissement détectable.## Get Started
 
 Une fois le projet cloné, installez les dépendances Python :
 
@@ -567,7 +679,7 @@ pipe.run_clustering(resolution=1.0)
 
 Effectue un clustering de l’espace latent.
 
-### Annotation cellulaire
+### Annotation cluster
 
 ```python
 MARKERS = {
@@ -595,7 +707,7 @@ pipe.run_cell_annotation(MARKERS)
 
 Ajoute une clé `celltype_pred` au adata et crée un nouveau fichier .h5ad correspondant à l'annotation pour chaque cellule.
 
-### Annotation cellulaire
+### Calcul des métriques
 
 ```python
 pipe.run_metrics()
@@ -618,6 +730,16 @@ pipe.run_gsea()
 ```
 
 Calcule les pathways enrichis à partir des résultats DE.
+
+---
+
+### Pathway validation
+
+```python
+pipe.run_pathway_validation()
+```
+
+Calcule le z-score et la pvalue empirique par type cellulaire relatifs aux gènes dans les pathways de GSEA permettant de tester si les résultats sont cohérents avec la littérature.
 
 ---
 

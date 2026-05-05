@@ -40,31 +40,26 @@ def train_scvi(
 
     output_dir = get_next_run_dir()
 
-    print("📥 Loading dataset...")
+    print(" Loading dataset...")
     adata = sc.read_h5ad(h5ad_path)
 
-    print("📊 Shape:", adata.shape)
+    print(" Shape:", adata.shape)
 
-    # -------------------------
-    # 🔧 FIX noms cellules
-    # -------------------------
+    # FIX noms cellules
     if not adata.obs_names.is_unique:
-        print("⚠️ Fixing duplicate cell names...")
+        print(" Fixing duplicate cell names...")
         adata.obs_names_make_unique()
 
     # -------------------------
-    # 🔍 CHECK batch
-    # -------------------------
+    #  CHECK batch
     if batch_key not in adata.obs.columns:
-        raise ValueError(f"❌ {batch_key} not found in obs")
+        raise ValueError(f" {batch_key} not found in obs")
 
     print(f"📊 Batch ({batch_key}) unique values:",
           adata.obs[batch_key].nunique())
 
-    # -------------------------
-    # ⚙️ SETUP SCVI
-    # -------------------------
-    print("⚙️ Setting up scVI...")
+    #  SETUP SCVI
+    print(" Setting up scVI...")
 
     scvi.model.SCVI.setup_anndata(
         adata,
@@ -75,10 +70,8 @@ def train_scvi(
         ]
     )
 
-    # -------------------------
-    # 🚀 MODEL
-    # -------------------------
-    print("🚀 Initializing model...")
+    #  MODEL
+    print(" Initializing model...")
 
     model = scvi.model.SCVI(
         adata,
@@ -87,20 +80,16 @@ def train_scvi(
         gene_likelihood="nb"
     )
 
-    # -------------------------
-    # 🧪 TRAIN
-    # -------------------------
-    print("🧪 Training...")
+    #  TRAIN
+    print(" Training...")
 
     model.train(
         max_epochs=n_epochs,
         batch_size=batch_size
     )
 
-    # -------------------------
-    # 💾 SAVE MODEL
-    # -------------------------
-    print("💾 Saving model...")
+    #  SAVE MODEL
+    print(" Saving model...")
 
     model_dir = os.path.join(output_dir, "model")
     model.save(model_dir, overwrite=True)
@@ -149,9 +138,7 @@ def evaluate_region_classification(
     :rtype: tuple[float, str]
     """
 
-    # =========================
     #  Extract data
-    # =========================
     X = adata.obsm[latent_key]
     y = adata.obs[label_key].values
 
@@ -160,9 +147,7 @@ def evaluate_region_classification(
     X = X[mask]
     y = y[mask]
 
-    # =========================
     #  Train / Test split
-    # =========================
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -171,9 +156,6 @@ def evaluate_region_classification(
         stratify=y
     )
 
-    # =========================
-    #  Model
-    # =========================
     clf = LogisticRegression(
         max_iter=max_iter,
         n_jobs=-1
@@ -181,18 +163,14 @@ def evaluate_region_classification(
 
     clf.fit(X_train, y_train)
 
-    # =========================
     #  Evaluation
-    # =========================
     y_pred = clf.predict(X_test)
 
     acc = accuracy_score(y_test, y_pred)
     report = classification_report(y_test, y_pred)
 
-    # =========================
     #  Print clean
-    # =========================
-    print("\n📊 Logistic Regression (region prediction)")
+    print("\n Logistic Regression (region prediction)")
     print(f"Accuracy: {acc:.4f}\n")
     print(report)
 
@@ -240,9 +218,7 @@ def compute_umap_from_scvi(
     print(" Loading model...")
     model = scvi.model.SCVI.load(model_path, adata=adata)
 
-    # -------------------------
     #  LATENT (BATCHED)
-    # -------------------------
     print(" Computing latent (batched)...")
 
     latent = model.get_latent_representation(batch_size=batch_size)
@@ -251,9 +227,7 @@ def compute_umap_from_scvi(
     adata.obsm["X_scVI"] = latent
     del latent
 
-    # -------------------------
     #  SUBSAMPLE
-    # -------------------------
     print(f" Subsampling to {n_cells_umap} cells for UMAP...")
 
     if adata.n_obs > n_cells_umap:
@@ -262,9 +236,7 @@ def compute_umap_from_scvi(
     else:
         adata_sub = adata.copy()
 
-    # -------------------------
     #  NEIGHBORS
-    # -------------------------
     print(" Computing neighbors...")
 
     sc.pp.neighbors(
@@ -274,25 +246,19 @@ def compute_umap_from_scvi(
         method="umap"
     )
 
-    # -------------------------
     #  UMAP
-    # -------------------------
     print(" Computing UMAP...")
 
     sc.tl.umap(adata_sub)
 
-    # -------------------------
     #  PLOT
-    # -------------------------
     print(" Plotting...")
 
     for col in ["batch", "dataset", "patient_id", "condition"]:
         if col in adata_sub.obs.columns:
             sc.pl.umap(adata_sub, color=col, show=True)
 
-    # -------------------------
     #  SAVE FIG
-    # -------------------------
     print(" Saving UMAP object...")
 
     out_path = f"{output_dir}/umap_subset.h5ad"
