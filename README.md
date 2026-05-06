@@ -1,4 +1,8 @@
 # Projet : Etude multi-cohortes de données snRNA-seq  via scVI pour une identification locale des mécanismes biologiques impliqués dans la SLA.
+<img src="sources/pipe_pres.png" width="800">
+<p align="center">
+<b></b> Pipeline d’analyse snRNA-seq multi-cohortes basé sur scVI, edgeR et GSEA.
+</p>
 
 ## English summary
 
