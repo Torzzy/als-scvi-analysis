@@ -328,6 +328,7 @@ Ici, les gènes sont d’abord nettoyés et agrégés, puis classés selon un sc
 On répète cela pour chaque combinaison de type cellulaire et de contrast (condition, région ou interaction), puis on calcule pour chaque pathway un NES (score d’enrichissement normalisé) et une FDR au niveau des pathways.  
 On conserve les résultats significatifs et les plus forts pour l’interprétation biologique.
 
+Une explication du fonctionnement de GSEA est proposée ici : [GSEA](./GSEA.md)
 ### Résultats
 
 Voici un résumé réalisé avec un LLM sur les différents pathways obtenus avec GSEA. N'étant pas biologiste, ces résultats sont donc à interpréter avec une très grande prudence. 

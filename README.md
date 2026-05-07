@@ -106,8 +106,10 @@ MARKERS = {
 }
 
 pipe.run_cluster_annotation(MARKERS)
+pipe.run_cell_annotation(MARKERS)
 pipe.run_metrics()
 pipe.run_de()
+pipe.run_gsea()
 pipe.run_pathway_validation()
 ```
 
@@ -117,6 +119,7 @@ Pour voir comment configurer le projet et lancer le code : [Get started](docs/me
 -  Méthodes détaillées : [methods.md](docs/methods.md)
 -  Résultats complets : [results.md](docs/results.md)
 -  Explication de edgeR : [edgeR.md](docs/edgeR.md)
+- Explication de GSEA :[GSEA.md](docs/GSEA.md)
 ## Ressources matérielles
 
 Le pipeline peut être memory-intensive, notamment lors de l'intégration scVI et des étapes de pseudobulk.  
