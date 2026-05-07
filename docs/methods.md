@@ -202,15 +202,15 @@ Pour se donner une idée de la qualité de l’annotation, différentes métriqu
 <table style="width:100%; text-align:center;">
   <tr>
     <td>
-      <img src="sources/umap_by_condition.png" width="100%">
+      <img src="../sources/umap_by_condition.png" width="100%">
       <div style="height: 40px;">Figure 1a : UMAP ALS vs Controls</div>
     </td>
     <td>
-      <img src="sources/umap_by_region.png" width="100%">
+      <img src="../sources/umap_by_region.png" width="100%">
       <div style="height: 40px;">Figure 1b : UMAP par région</div>
     </td>
     <td>
-      <img src="sources/umap_by_celltype.png" width="100%">
+      <img src="../sources/umap_by_celltype.png" width="100%">
       <div style="height: 40px;">Figure 1c : UMAP par cluster</div>
     </td>
   </tr>
@@ -223,7 +223,7 @@ On observe que, mis à part quelques clusters mixtes, l’annotation cellulaire 
 
 **Dotplot markers**
 
-<img src="sources/dotplot.png" width="100%">
+<img src="../sources/dotplot.png" width="100%">
 
 Le dotplot des marqueurs permet de visualiser le score moyen des cellules dans chaque cluster par type cellulaire.  
 Lorsque le cluster est bien homogène, on observe une seule couleur vive sur la ligne. Lorsqu’il est mixte, plusieurs couleurs d’intensité similaire sont présentes.  

@@ -55,7 +55,7 @@ Les cellules sont regroupées par type et mélangées entre patients. Les cluste
 
 **Dotplot markers**
 
-<img src="sources/dotplot.png" width="100%">
+<img src="../sources/dotplot.png" width="100%">
 
 ## Résultats des pathways GSEA par type cellulaire :
 
