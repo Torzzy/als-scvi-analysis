@@ -1,7 +1,7 @@
 
 
 from .config import DEFAULT_ANALYSIS_ROOT, FILES
-from .utils import ensure_dir, reset_folder
+from .utils import ensure_dir
 from .latent import compute_scvi_latent
 from .clustering import compute_leiden, subsample_umap
 from .de_analysis import run_pseudobulk_de, summarize_edger_results
@@ -14,9 +14,7 @@ from .annotation.metrics import (compute_knn_purity, compute_silhouette_per_clus
 from .pathway_validation import score_celltype_vs_reference, ALS_REFERENCE, permutation_test_celltypes, build_gene_strata_with_features
 
 from pathlib import Path
-import scanpy as sc
 import pandas as pd
-from scipy.stats import mannwhitneyu
 import numpy as np
 import os
 import gc

@@ -116,6 +116,7 @@ Pour voir comment configurer le projet et lancer le code : [Get started](docs/me
 
 -  Méthodes détaillées : [methods.md](docs/methods.md)
 -  Résultats complets : [results.md](docs/results.md)
+-  Explication de edgeR : [edgeR.md](docs/edgeR.md)
 ## Ressources matérielles
 
 Le pipeline peut être memory-intensive, notamment lors de l'intégration scVI et des étapes de pseudobulk.  

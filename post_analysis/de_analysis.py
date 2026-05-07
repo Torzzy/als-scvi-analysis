@@ -1,19 +1,17 @@
 import os
 import tempfile
 import subprocess
-from pathlib import Path
-
 import numpy as np
-import pandas as pd
 import scipy.sparse as sp
+from pathlib import Path
+import pandas as pd
 
 from .io import load_adata
 from .utils import reset_folder
 
 
-# ======================================================
-# R SCRIPT (ROBUST EDGE R DESIGN + GSEA RANKING)
-# ======================================================
+
+# R SCRIPT
 R_SCRIPT = r"""
 suppressMessages(library(edgeR))
 
@@ -35,9 +33,9 @@ y <- estimateDisp(y, design)
 
 fit <- glmQLFit(y, design)
 
-# ======================================================
-# SAFE TEST FUNCTION (WITH GSEA RANKING)
-# ======================================================
+# ===================
+# SAFE TEST FUNCTION
+# ===================
 safe_test <- function(coef_name, out_name) {
 
     if (!(coef_name %in% colnames(design))) {
@@ -52,9 +50,6 @@ safe_test <- function(coef_name, out_name) {
     # FORCE FDR ALWAYS
     tt$FDR <- p.adjust(tt$PValue, method="BH")
 
-    # ======================================================
-    # GSEA RANKING FEATURES (ADDED ONLY, NOTHING BROKEN)
-    # ======================================================
 
     tt$logFC_rank <- tt$logFC
 
@@ -208,11 +203,6 @@ def run_pseudobulk_de(
                 if f.endswith(".csv"):
                     df = pd.read_csv(os.path.join(tmp, f))
                     df.to_csv(ct_dir / f, index=False)
-# ======================================================
-# SUMMARY FUNCTION
-# ======================================================
-from pathlib import Path
-import pandas as pd
 
 
 def summarize_edger_results(
@@ -249,10 +239,6 @@ def summarize_edger_results(
                 df["fdr"] = df["padj"]
             else:
                 df["fdr"] = 1.0
-
-        # ==============================
-        # ADD t-statistic (IF PRESENT)
-        # ==============================
         if "t_stat" not in df.columns:
             if "rank_score" in df.columns:
                 df["t_stat"] = df["rank_score"]

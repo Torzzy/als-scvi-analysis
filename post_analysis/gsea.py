@@ -29,9 +29,7 @@ def run_gsea(
 
     results_all = []
 
-    # =========================
     # GSEA LOOP
-    # =========================
     for ct in df[celltype_key].unique():
 
         print(f"\n=== CELLTYPE: {ct} ===")
@@ -46,11 +44,9 @@ def run_gsea(
 
             sub = df_ct[df_ct["contrast"] == contrast].copy()
 
-            # -------------------------
             # CLEANING
-            # -------------------------
             sub = sub.dropna(subset=["gene", "logfc", "fdr", "t_stat"])
-            # REMOVE HOUSEKEEPING GENES
+            # REMOVE  GENES
             sub = sub[~sub["gene"].str.match(r"^RPL|^RPS|^MT-")]
 
             # collapse duplicates
@@ -60,9 +56,7 @@ def run_gsea(
                 "t_stat": "mean"
             })
 
-            # =========================
-            # RANKING (FIXED)
-            # =========================
+            # RANKING
             sub["score"] = sub["t_stat"]
 
             # deterministic tie-breaking (no randomness)
@@ -118,23 +112,16 @@ def run_gsea(
     if len(results_all) == 0:
         raise RuntimeError("No enrichment results")
 
-    # =========================
     # FINAL OUTPUT
-    # =========================
     final = pd.concat(results_all, ignore_index=True)
     final.to_csv(output_dir / "ALL_ENRICHMENTS.csv", index=False)
-
-    # =========================
     # FILTER SIGNIFICANT
-    # =========================
     sig = final[
         (final["FDR q-val"] < fdr_threshold) &
         (final["NES"].abs() > nes_threshold)
     ].copy()
 
-    # =========================
     # TOP PATHWAYS
-    # =========================
     top = (
         sig.sort_values("NES", ascending=False)
            .groupby(["celltype", "contrast", "geneset"])
