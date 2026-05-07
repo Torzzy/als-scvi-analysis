@@ -85,7 +85,7 @@ Pour cela edgeR réalise plusieurs étapes :
 
 On commence par fixer &phi; grossièrement. L'idée est, un peu comme dans scVI, de minimiser la fonction de coût suivante :
 
-<img src="../sources/latex/betas_1.png" width="200">
+<img src="../sources/latex/betas_1.png" width="300">
 
 L'idée est de calculer la probabilité d'observer le count Y<sub>ig</sub>, du gène g et du patient i, en supposant que la moyenne &mu;<sub>ig</sub> dépend de &beta;<sub>g</sub> comme décrit au dessus.  
 Si la probabilité est proche de 0 le terme dans la fonction de coût tend vers l'infini. Si la probabilité tend vers 1, le terme de la fonction de coût tend vers 0.  
@@ -95,21 +95,21 @@ on fait ce calcul pour tous les counts des patients et on optimise la somme.
 
 On fait exactement la même chose que pour les &beta; en initialisant ces derniers avec les valeurs trouvées précédemment :
 
-<img src="../sources/latex/phi_1.png" width="200">
+<img src="../sources/latex/phi_1.png" width="300">
 
 ### estimation des paramètres m et s :
 
 On suppose que les log(&phi;) de chaque gène suivent une loi normale de paramètres m et s.  
 On cherche alors à trouver m et s qui minimisent la fonction de coût suivante :
 
-<img src="../sources/latex/m-s.png" width="200">
+<img src="../sources/latex/m-s.png" width="300">
 
 ### estimation finale des &phi; via shrinkage
 
 C'est l'étape clé, on cherche de nouveau les &phi; mais cette fois en imposant la contrainte supplémentaire qu'ils soient vraisemblables vis-à-vis de la loi normale qu'ils suivent (qui dépend de m et s calculés juste avant).  
 Pour cela on utilise la fonction de coût suivante :
 
-<img src="../sources/latex/shrinkage.png" width="200">
+<img src="../sources/latex/shrinkage.png" width="300">
 
 ### estimation finale des &beta;
 
