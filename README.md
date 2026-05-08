@@ -1,4 +1,4 @@
-# Projet : Etude multi-cohortes de données snRNA-seq  via scVI pour une identification locale des mécanismes biologiques impliqués dans la SLA.
+# Projet : Étude multi-cohortes de données snRNA-seq dans la SLA via scVI, edgeR et GSEA pour l’identification d’altérations transcriptionnelles spécifiques aux tissus
 <img src="sources/pipe_pres.png" width="800">
 <p align="center">
 <b></b> Pipeline d’analyse snRNA-seq multi-cohortes basé sur scVI, edgeR et GSEA.
@@ -13,16 +13,16 @@ Ce projet analyse des données de snRNA-seq dans la sclérose latérale amyotrop
 L’objectif est d’identifier des altérations transcriptionnelles robustes et spécifiques aux tissus à travers plusieurs jeux de données indépendants.
 ## Contributions principales
 
-- Intégration multi-cohortes de données snRNA-seq via scVI avec correction des batch effects
-- Construction d’un espace latent biologique pour l’analyse cellulaire non supervisée
-- Annotation hiérarchique des types cellulaires (markers + structure du latent space)
+- Intégration multi-cohortes de données snRNA-seq via scVI avec atténuation des batch effects
+- Construction d’un espace latent pour l’analyse cellulaire non supervisée
+- Annotation des types cellulaires à partir de marqueurs et de la structure du latent space
 - Analyse différentielle en pseudobulk avec edgeR et modèle condition × région
-- Enrichment de pathways (GSEA preranked) à résolution cellulaire
-- Validation des signatures biologiques par comparaison à la littérature via tests permutationnels
+- Enrichment de pathways (GSEA preranked)
+- Validation des signatures biologiques par comparaison à la littérature
 
 ## Objectif biologique
 
-L’objectif de ce projet est de caractériser les altérations transcriptionnelles associées à la SLA dans différents types cellulaires et régions cérébrales (cortex moteur, cortex frontal, moelle épinière), à partir de données snRNA-seq multi-cohortes.
+L’objectif de ce projet est de caractériser les altérations transcriptionnelles associées à la SLA dans différents types cellulaires et régions cérébrales (cortex moteur, cortex frontal, cortex prefrontal, moelle épinière), à partir de données snRNA-seq multi-cohortes.
 
 ## Jeux de données
 
@@ -36,17 +36,17 @@ Trois jeux de données GEO ont été utilisés :
 
 1. Prétraitement des données (QC, sélection des gènes, HVG)
 2. Intégration multi-cohortes avec scVI
-3. Analyse de l’espace latent et évaluation des batch effects
+3. Analyse de l’espace latent et évaluation des batch effects et confounding batch/region
 4. Clustering non supervisé (Leiden)
-5. Annotation hiérarchique des cellules
+5. Annotation des clusters et cellules semi-supervisée
 6. Agrégation en pseudobulk par patient et type cellulaire
 7. Analyse différentielle (edgeR)
-8. Enrichment de pathways (GSEA preranked)
+8. Enrichissement de pathways (GSEA preranked)
 9. Validation des résultats par comparaison à la littérature
 
 ## Structure du projet
 
-- `docs/methods.md` → description complète et détaillée de la méthode (niveau article scientifique)
+- `docs/methods.md` → description complète et détaillée de la méthode
 - `docs/results.md` → résultats biologiques, métriques et figures
 - `sources/` → figures, dotplots, tableaux de pathways
 
@@ -65,12 +65,13 @@ Sections importantes dans `docs/methods.md` :
 - [annotation cluster/cellule](docs/methods.md#annotation-cellulaire) 
 - [pseudobulk DE](docs/methods.md#pseudobulk-de) 
 - [GSEA](docs/methods.md#gsea) 
-- [Validationsur la littérature existante](docs/methods.md#validation)
+- [Validation sur la littérature existante](docs/methods.md#validation)
 
 ## Résultats principaux
 
-- Enrichissement significatif de pathways associés à la SLA dans les neurones et astrocytes
-- Cohérence globale avec les signatures décrites dans la littérature
+- Forte reprogrammation métabolique et mitochondriale (OXPHOS, mTORC1, Myc) observée dans plusieurs types cellulaires.
+- Activation conjointe de voies de stress cellulaire et altération des signatures synaptiques et neuronales selon les régions et les types cellulaires.
+- Cohérence globale avec les signatures décrites dans la littérature.
 
 ## Limites
 
@@ -122,7 +123,7 @@ Pour voir comment configurer le projet et lancer le code : [Get started](docs/me
 - Explication de GSEA :[GSEA.md](docs/GSEA.md)
 ## Ressources matérielles
 
-Le pipeline peut être memory-intensive, notamment lors de l'intégration scVI et des étapes de pseudobulk.  
+Le pipeline peut être memory-intensive notamment le preprocessing et l'annotation des clusters/cellules.  
 Il est recommandé d’exécuter les étapes de manière séquentielle.
 
 Le pipeline a été développé et testé sur :

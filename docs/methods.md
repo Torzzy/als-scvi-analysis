@@ -43,7 +43,7 @@ Ces données représentent une opportunité pour mieux comprendre les mécanisme
 
 ## Objectif
 
-Étudier les altérations transcriptionnelles associées à la SLA à travers plusieurs cohortes indépendantes et plusieurs régions du système nerveux en utilisant l’algorithme scVI.
+Étudier les altérations transcriptionnelles associées à la SLA à travers plusieurs cohortes indépendantes et plusieurs régions du système nerveux en utilisant scVI, edgeR, GSEA.
 
 L’objectif est d’identifier des signaux robustes entre cohortes et entre tissus, ou au contraire des signaux spécifiques à certaines régions.
 
@@ -163,7 +163,7 @@ Pour la suite de la démarche, on définit des gènes marqueurs qui caractérise
 
 #### Annotation des clusters
 
-Pour annoter un cluster c, on regarde quels gènes sont plus exprimés dans ce cluster par rapport aux autres.  
+Pour annoter un cluster c, on se demande quels gènes sont plus exprimés dans ce cluster par rapport aux autres ?  
 Pour cela, on réalise un DE (Differential Expression) avec l'algorithme edgeR.  
 Il s'agit d'un test statistique qui permet de répondre à la question posée. Pour chaque gène,  
 l'algorithme retourne deux valeurs : logFC et FDR. LogFC indique à quel point le gène est plus exprimé dans le cluster par rapport aux autres (négatif s'il est moins exprimé que dans les autres clusters, positif sinon).  
@@ -336,11 +336,11 @@ On ne conserve que les pathways avec un NES > 1.5, une FDR < .05 et un nombre mi
 La liste de tous les pathways est disponible dans `sources/TOP_PATHWAYS.csv`.
 
 
-Astrocytes :
+**Astrocytes :**
 
 Les astrocytes montrent une signature dominante région_FX marquée par une forte activation du métabolisme mitochondrial (OXPHOS, import mitochondrial) et des voies de sensing des nutriments (mTORC1, Myc, starvation response), indiquant une reprogrammation énergétique intrinsèque. Les processus de localisation protéique et de réorganisation intracellulaire confirment cet axe métabolique et structural. En parallèle, les voies synaptiques sont fortement enrichies mais principalement classées en interaction_SC / interaction_FX, suggérant un rôle de modulation glie–neurone plutôt qu’une activité neuronale propre. Les signaux de stress protéique sont présents mais globalement contextuels, tandis que les voies immuno-inflammatoires en global_condition apparaissent plutôt réprimées.
 
-Endothelial :
+**Endothelial :**
 
 Profil global dominé par une forte reprogrammation énergétique avec activation des voies mitochondriales (OXPHOS, respiration, glycolyse) et du sensing des nutriments (mTORC1, starvation), indiquant un état métabolique très dynamique dépendant de l’énergie disponible.
 
@@ -350,7 +350,7 @@ Les modules de stress (hypoxie, UV, TNF/NF-κB, IFNγ) montrent un état cellula
 
 Enfin, les directions régionales FX/SC/MCX indiquent une séparation nette entre un programme métabolique (FX), un module signalisation/immunité (SC), et une composante de remodelage/interaction synaptique et transport (MCX), avec quelques signatures globalement répressives sur certains axes inflammatoires et synaptiques.
 
-Excitatory :
+**Excitatory :**
 
 Le profil est dominé par une très forte activation des programmes de stress protéique et chaperonnes (HSF1, HSP70/HSP90, heat shock), indiquant une charge protéotoxique élevée et une réponse adaptative majeure au stress cellulaire.
 
@@ -360,7 +360,7 @@ Les voies de signalisation hormonale et de croissance (récepteurs stéroïdiens
 
 Enfin, le métabolisme énergétique mitochondrial est très présent mais contrasté selon les modules (OXPHOS à la fois activé et réorganisé selon les régions FX/MCX), ce qui suggère une adaptation énergétique plutôt qu’un simple gain ou perte d’activité.
 
-Inhibitory :
+**Inhibitory :**
 
 Signature fortement enrichie en métabolisme énergétique (OXPHOS, TCA, glycolyse) avec une cohérence élevée entre régions MCX et FX.
 Présence dominante de processus de transport d’électrons mitochondrial et de régulation du fer, suggérant un état énergétique stable mais contraint.
@@ -368,11 +368,11 @@ Enrichissement important des voies de signalisation immunitaire et apoptotique, 
 Les interactions synaptiques et GABAergiques restent présentes mais secondaires, compatibles avec un rôle régulateur plus que excitateur.
 
 
-Neurons :
+**Neurons :**
 
 Les résultats montrent une forte activation du métabolisme mitochondrial et des programmes Myc/mTORC1 dans plusieurs régions, notamment MCX, FX et Neuron global, avec enrichissement de l’oxydative phosphorylation et du transport mitochondrial. En parallèle, on observe une activation des réponses au stress (HSF1, HSP, UPR) dans ces mêmes régions, suggérant une forte demande cellulaire. À l’inverse, les voies de transmission synaptique (récepteurs, canaux ioniques, NMDA, GABA) sont globalement inhibées, surtout en SC et MCX. Globalement, le profil évoque une bascule vers un état métabolique actif mais une réduction de la signalisation neuronale fonctionnelle.
 
-Oligodendrocytes :
+**Oligodendrocytes :**
 
 On observe une forte activation des programmes mitochondriaux, notamment Oxidative Phosphorylation (régions FX, SC et MCX), suggérant une demande énergétique élevée.
 Les signatures de signalisation synaptique / neuronal system sont aussi très représentées, surtout en régions FX et MCX, avec des gènes liés aux neurotransmetteurs (GABA, glutamate, synapse).
@@ -380,7 +380,7 @@ Des voies de stress cellulaire et réponse aux protéines chaperonnes (heat shoc
 On note également des signaux immuno-viraux (SARS-CoV, TCR, allograft rejection) et de signalisation intracellulaire (DARPP-32, G alpha, NF-kB) principalement en régions FX et MCX.
 Globalement, les enrichissements suggèrent un état oligodendrocytaire actif, métaboliquement élevé et fortement couplé à des interactions neuronales et au stress cellulaire.
 
-Pericytes :
+**Pericytes :**
 
 On observe une forte activation du métabolisme énergétique avec Oxidative Phosphorylation en régions FX et MCX, indiquant une activité mitochondriale élevée.
 Les voies de signalisation vasculaire et métabolique sont très représentées, notamment insulin receptor signaling, PPARα / lipid metabolism et glycolyse, surtout en région FX.
