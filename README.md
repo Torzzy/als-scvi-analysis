@@ -48,8 +48,9 @@ Trois jeux de données GEO ont été utilisés :
 
 - `docs/methods.md` → description complète et détaillée de la méthode
 - `docs/results.md` → résultats biologiques, métriques et figures
-- `sources/` → figures, dotplots, tableaux de pathways
-
+- `sources/` → figures, dotplots, tableaux de pathways pour les fichiers `.md` notamment.
+- `preprocessing/` → scripts pour le preprocessing et la fusion des datasets 
+- `post_analysis/` → scripts pour clustering, annotations, pseudobulk DE edgeR, GSEA, pathway validation, etc...
 ## Comment explorer ce projet
 
 Pour une lecture rapide des principaux résultats :

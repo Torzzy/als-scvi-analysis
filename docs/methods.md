@@ -173,7 +173,7 @@ Ces deux valeurs permettent d'attribuer un score pour chaque gène dans le clust
 
 S(G) = logFC * (-10 log(FDR + ε))
 
-On finit par calculer la moyenne des scores pour chaque type cellulaire et on annote le cluster avec le score moyen le plus grand.  
+On calcule la moyenne des scores pour chaque type cellulaire ((S(GAD1) + S(GAD2))/2 pour Inhibitory par exemple) et on annote le cluster avec le score moyen le plus grand.  
 Plus précisément, on vérifie que le score n'est pas trop faible, auquel cas on n'annote pas. Si le deuxième score est trop proche  
 du premier, on l'annote comme un cluster mixte.
 
@@ -186,7 +186,6 @@ Pour annoter les cellules, on se base sur le calcul de 3 scores par type de cell
 - Un score de distance au centroïde S<sub>C</sub>. Pour chaque type cellulaire, on calcule le centroïde dans l'espace latent et on prend la distance entre la cellule et ce centroïde. On divise par le maximum des distances pour normaliser.
 
 On pondère pour obtenir le score final d'une cellule de la manière suivante :
-
 S<sub>total</sub> = 0.4 S<sub>N</sub> + 0.35 S<sub>MARKERS</sub> + 0.25 S<sub>C</sub>
 
 En pratique, cette annotation se fait de manière itérative. On initialise les scores des cellules avec S<sub>MARKERS</sub>  
@@ -287,6 +286,8 @@ Les cellules sont regroupées par type et mélangées entre patients. Les cluste
 
 Cette méthode n'est pas la plus robuste et il faudrait utiliser un atlas de cellules déjà annotées et le projeter dans l'espace latent. On propage ensuite cette annotation dans l'espace latent pour annoter le reste des cellules.
 N'ayant pas d'atlas, c'est la méthode proposée qui a été choisie.
+
+La pondération du score par cellule est arbitraire. On considère que la cohérence de l'espace latent est un peu plus importante que le score des gènes marqueurs.
 
 ### Pseudobulk DE
 
